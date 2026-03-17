@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: nse_mysql
+    environment:
+      MYSQL_DATABASE: nse_portfolio
+      MYSQL_USER: root
+      MYSQL_PASSWORD: password
+      MYSQL_ROOT_PASSWORD: password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  api:
+    build: .
+    container_name: nse_django_api
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app
+      - ../ml_models:/app/ml_models
+      - ../brain:/app/brain
+      - ../portfolio.db:/app/portfolio.db 
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_NAME=nse_portfolio
+      - DB_USER=root
+      - DB_PASSWORD=password
+    depends_on:
+      - db
+
+volumes:
+  mysql_data:

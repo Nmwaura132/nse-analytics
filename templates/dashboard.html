@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NSE Pro Dashboard</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // AGGRESSIVE Console Noise Suppression (MetaMask, runtime.lastError)
+        (function () {
+            const originalConsoleError = console.error;
+            console.error = function (...args) {
+                const msg = args.map(a => String(a)).join(' ');
+                if (msg.includes('runtime.lastError') ||
+                    msg.includes('MetaMask') ||
+                    msg.includes('receiving end does not exist')) {
+                    return;
+                }
+                originalConsoleError.apply(console, args);
+            };
+
+            window.addEventListener('error', (e) => {
+                if (e.message && (e.message.includes('MetaMask') || e.message.includes('receiving end'))) {
+                    e.stopImmediatePropagation();
+                    e.preventDefault();
+                }
+            }, true);
+
+            window.addEventListener('unhandledrejection', (e) => {
+                if (e.reason && String(e.reason).includes('MetaMask')) {
+                    e.preventDefault();
+                }
+            });
+
+            if (typeof window.ethereum === 'undefined') {
+                window.ethereum = { isMetaMask: false, request: () => new Promise(() => { }) };
+            }
+        })();
+
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        slate: { 850: '#151e2e', 900: '#0f172a' },
+                        emerald: { 450: '#10b981' }, // Custom green
+                    },
+                    animation: {
+                        marquee: 'marquee 25s linear infinite',
+                    },
+                    keyframes: {
+                        marquee: {
+                            '0%': { transform: 'translateX(100%)' },
+                            '100%': { transform: 'translateX(-100%)' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .glass-card {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .text-glow {
+            text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+        }
+
+        /* Hide scrollbar for ticker */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+
+<body class="bg-slate-900 text-gray-200 font-sans antialiased min-h-screen flex flex-col">
+
+    <!-- Navbar -->
+    <nav class="border-b border-slate-700 bg-slate-850/80 backdrop-blur sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center">
+                    <span
+                        class="text-2xl font-bold bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
+                        NSE<span class="font-light text-gray-400">Pro</span>
+                    </span>
+                </div>
+
+                <!-- Search Bar -->
+                <div class="relative w-96 mx-4 hidden md:block">
+                    <input type="text" id="stock-search" placeholder="Search ticker (e.g. SCOM)..."
+                        class="w-full bg-slate-800/50 border border-slate-700/50 rounded-xl px-4 py-2 pl-10 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all text-sm text-gray-200 placeholder-slate-500">
+                    <svg class="w-4 h-4 text-slate-500 absolute left-3 top-3" fill="none" stroke="currentColor"
+                        viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                </div>
+
+                <div class="flex space-x-4">
+                    <span class="text-xs text-slate-400 flex items-center">
+                        Updated: <span id="last-update" class="ml-1 text-emerald-400 font-mono">-</span>
+                    </span>
+                    <button onclick="refreshData()"
+                        class="px-3 py-1 text-sm bg-slate-800 hover:bg-slate-700 rounded border border-slate-600 transition">
+                        Refresh
+                    </button>
+                    <a href="/datascience"
+                        class="px-3 py-1 text-sm bg-purple-900/50 text-purple-200 hover:bg-purple-900/70 rounded border border-purple-700 transition">
+                        Data Science
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Smart Ticker -->
+    <div class="bg-slate-950 border-b border-slate-800 h-8 flex items-center overflow-hidden relative">
+        <div class="absolute left-0 bg-gradient-to-r from-slate-950 to-transparent w-8 h-full z-10"></div>
+        <div class="whitespace-nowrap animate-marquee flex items-center space-x-8 px-4" id="smart-ticker">
+            <span class="text-xs text-slate-500">Loading market intel...</span>
+        </div>
+        <div class="absolute right-0 bg-gradient-to-l from-slate-950 to-transparent w-8 h-full z-10"></div>
+    </div>
+
+    <!-- Main Content -->
+    <main class="flex-grow container mx-auto px-4 py-8">
+
+        <!-- Hero Stats -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+            <div class="glass-card rounded-xl p-4 flex flex-col items-center">
+                <span class="text-xs text-slate-400 uppercase tracking-wider">Market Status</span>
+                <span class="text-xl font-bold text-emerald-400 mt-1">OPEN</span>
+            </div>
+            <div class="glass-card rounded-xl p-4 flex flex-col items-center">
+                <span class="text-xs text-slate-400 uppercase tracking-wider">Gainers</span>
+                <span class="text-2xl font-bold text-emerald-500 mt-1" id="gainers-count">-</span>
+            </div>
+            <div class="glass-card rounded-xl p-4 flex flex-col items-center">
+                <span class="text-xs text-slate-400 uppercase tracking-wider">Losers</span>
+                <span class="text-2xl font-bold text-rose-500 mt-1" id="losers-count">-</span>
+            </div>
+            <div class="glass-card rounded-xl p-4 flex flex-col items-center relative overflow-hidden">
+                <div class="absolute inset-0 bg-emerald-500/5 z-0"></div>
+                <span class="text-xs text-emerald-300 uppercase tracking-wider z-10 font-semibold">💎 Bargain
+                    Alerts</span>
+                <span class="text-3xl font-bold text-emerald-400 mt-1 z-10 text-glow" id="candidates-count">-</span>
+            </div>
+        </div>
+
+        <!-- Two Column Layout: Top Stocks & Portfolio -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+            <!-- Left: Top Stocks (Cards) -->
+            <div class="lg:col-span-2 space-y-6">
+                <h2 class="text-xl font-semibold text-gray-100 flex items-center">
+                    <span class="mr-2">🔥</span> Top Picks & Movers
+                </h2>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4" id="stock-grid">
+                    <!-- Cards injected here -->
+                    <div class="col-span-2 text-center text-slate-500 py-10">Loading smart insights...</div>
+                </div>
+            </div>
+
+            <!-- Right: Portfolio & Quick Actions -->
+            <div class="space-y-6">
+
+                <!-- Portfolio Card -->
+                <div class="glass-card rounded-xl p-6">
+                    <h2 class="text-lg font-semibold text-gray-100 mb-4 flex items-center">
+                        <span class="mr-2">💼</span> Portfolio Simulator
+                    </h2>
+
+                    <!-- Doughnut Chart -->
+                    <div class="relative h-48 w-full mb-6">
+                        <canvas id="portfolioChart"></canvas>
+                        <!-- Center Text overlay -->
+                        <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div class="text-center">
+                                <span class="text-xs text-slate-400">Projected</span>
+                                <div class="text-xl font-bold text-emerald-400" id="p-return-center">0%</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Doughnut Chart -->
+                    <div class="relative h-48 w-full mb-6">
+                        <canvas id="portfolioChart"></canvas>
+                        <!-- Center Text overlay -->
+                        <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div class="text-center">
+                                <span class="text-xs text-slate-400">Projected</span>
+                                <div class="text-xl font-bold text-emerald-400" id="p-return-center">0%</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="grid grid-cols-2 gap-2 mb-4">
+                        <button onclick="openTradeModal()"
+                            class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded text-sm font-medium transition flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M12 4v16m8-8H4"></path>
+                            </svg>
+                            Add Trade
+                        </button>
+                        <button onclick="calculatePortfolio()"
+                            class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded text-sm font-medium transition">
+                            Rebalance
+                        </button>
+                    </div>
+
+                    <!-- Budget Input (Smaller) -->
+                    <div class="relative mb-4">
+                        <span class="absolute left-3 top-2 text-slate-500 text-xs">Budget</span>
+                        <input type="number" id="budget-input" value="100000"
+                            class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 pt-5 text-sm focus:outline-none focus:border-emerald-500 transition text-right font-mono text-emerald-400"
+                            placeholder="100,000">
+                    </div>
+
+                    <!-- Metrics -->
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+                        <div class="bg-slate-900/50 p-2 rounded">
+                            <span class="block text-slate-500">Sharpe Ratio</span>
+                            <span class="font-mono text-emerald-400" id="p-sharpe">-</span>
+                        </div>
+                        <div class="bg-slate-900/50 p-2 rounded">
+                            <span class="block text-slate-500">Risk Score</span>
+                            <span class="font-mono text-amber-400" id="p-risk">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Buy Candidates List -->
+                <div class="glass-card rounded-xl p-4">
+                    <h3 class="text-sm font-semibold text-emerald-400 mb-3 uppercase tracking-wide">💎 Smart Buys</h3>
+                    <div class="space-y-3" id="buy-list">
+                        <div class="text-xs text-slate-500">Scanning market...</div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+    </main>
+
+    <footer class="mt-12 text-center text-secondary py-6 border-t border-border/50">
+        <p>NSE Pro Dashboard &copy; 2026 | Powered by TradingView & Machine Learning</p>
+    </footer>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <!-- Stock Detail Modal -->
+    <div id="stock-modal" class="fixed inset-0 z-50 hidden">
+        <!-- Backdrop -->
+        <div class="absolute inset-0 bg-black/80 backdrop-blur-sm transition-opacity opacity-0" id="modal-backdrop"
+            onclick="closeModal()"></div>
+
+        <!-- Modal Content -->
+        <div class="absolute right-0 top-0 h-full w-full md:w-[500px] bg-slate-900 border-l border-slate-700/50 shadow-2xl p-6 overflow-y-auto transform transition-transform duration-300 translate-x-full"
+            id="modal-panel">
+
+            <div class="flex justify-between items-start mb-6">
+                <div>
+                    <h2 id="modal-ticker" class="text-3xl font-bold text-white tracking-tight"></h2>
+                    <p id="modal-name" class="text-slate-400 text-sm"></p>
+                </div>
+                <button onclick="closeModal()"
+                    class="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
+                        </path>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Modal Header Stats -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+                <!-- Price -->
+                <div class="glass-card p-4 rounded-xl">
+                    <div class="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Current Price</div>
+                    <div id="modal-price" class="text-2xl font-bold text-white mt-1 font-mono"></div>
+                    <div id="modal-change" class="text-xs font-mono font-medium mt-1"></div>
+                </div>
+                <!-- Score -->
+                <div class="glass-card p-4 rounded-xl">
+                    <div class="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Composite Score</div>
+                    <div class="flex items-baseline gap-1 mt-1">
+                        <div id="modal-score" class="text-2xl font-bold text-emerald-400"></div>
+                        <div class="text-[10px] text-slate-500">/ 100</div>
+                    </div>
+                </div>
+                <!-- Range -->
+                <div class="glass-card p-4 rounded-xl">
+                    <div class="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Day Range</div>
+                    <div id="modal-range" class="text-lg font-bold text-white mt-1 font-mono">--</div>
+                </div>
+                <!-- Volume -->
+                <div class="glass-card p-4 rounded-xl">
+                    <div class="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Volume</div>
+                    <div id="modal-vol" class="text-lg font-bold text-white mt-1 font-mono">--</div>
+                </div>
+            </div>
+
+            <!-- Detailed Metrics Grid -->
+            <h3 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3 pl-1">Fundamental & Technical
+                Analysis</h3>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+                <!-- P/E Ratio -->
+                <div class="glass-card p-3 rounded-lg border border-slate-800">
+                    <div class="text-[10px] text-slate-500">P/E Ratio</div>
+                    <div id="modal-pe" class="font-mono text-lg text-slate-200">--</div>
+                </div>
+                <!-- Dividend Yield -->
+                <div class="glass-card p-3 rounded-lg border border-slate-800">
+                    <div class="text-[10px] text-slate-500">Dividend Yield</div>
+                    <div id="modal-yield" class="font-mono text-lg text-slate-200">--</div>
+                </div>
+                <!-- Graham Number -->
+                <div class="glass-card p-3 rounded-lg border border-slate-800">
+                    <div class="text-[10px] text-slate-500">Graham Number</div>
+                    <div id="modal-graham" class="font-mono text-lg text-slate-200">--</div>
+                </div>
+                <!-- Intrinsic Value -->
+                <div class="glass-card p-3 rounded-lg border border-slate-800">
+                    <div class="text-[10px] text-slate-500">Intrinsic Value</div>
+                    <div id="modal-intrinsic" class="font-mono text-sm font-bold text-slate-200 mt-1">--</div>
+                </div>
+                <!-- RSI -->
+                <div class="glass-card p-3 rounded-lg border border-slate-800">
+                    <div class="text-[10px] text-slate-500">RSI (14)</div>
+                    <div id="modal-rsi" class="font-mono text-lg text-slate-200">--</div>
+                </div>
+                <!-- Risk Score -->
+                <div class="glass-card p-3 rounded-lg border border-slate-800">
+                    <div class="text-[10px] text-slate-500">Risk Score</div>
+                    <div id="modal-risk" class="font-mono text-lg text-slate-200">--</div>
+                </div>
+                <!-- Momentum -->
+                <div class="glass-card p-3 rounded-lg border border-slate-800">
+                    <div class="text-[10px] text-slate-500">Momentum</div>
+                    <div id="modal-momentum" class="font-mono text-lg text-slate-200">--</div>
+                </div>
+            </div>
+
+            <!-- Chart Container -->
+            <div class="glass-card p-4 h-48 mb-6 rounded-xl border border-slate-800">
+                <canvas id="modal-chart"></canvas>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex gap-3 mt-auto">
+                <button onclick="addToPortfolioFromModal('BUY')"
+                    class="flex-1 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-emerald-900/40 transform active:scale-95 flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+                    </svg>
+                    Add to Portfolio
+                </button>
+            </div>
+
+        </div>
+    </div>
+    </div>
+
+    <!-- Trade Modal (New) -->
+    <div id="trade-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/80 backdrop-blur-sm" onclick="closeTradeModal()"></div>
+        <div
+            class="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md relative z-10 shadow-2xl transform transition-all scale-100">
+            <h3 class="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                <span>💼</span> Add Manual Trade
+            </h3>
+
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Stock Ticker</label>
+                    <input list="stock-options" id="trade-ticker" placeholder="Start typing (e.g. SCOM)"
+                        class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition">
+                    <datalist id="stock-options">
+                        <!-- Populated by JS -->
+                    </datalist>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Quantity</label>
+                        <input type="number" id="trade-qty" placeholder="100"
+                            class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Price (KES)</label>
+                        <input type="number" id="trade-price" placeholder="15.50"
+                            class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition">
+                    </div>
+                </div>
+
+                <button onclick="submitTrade()"
+                    class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition shadow-lg shadow-emerald-900/50 mt-2">
+                    Confirm Trade
+                </button>
+                <button onclick="closeTradeModal()"
+                    class="w-full text-slate-500 text-sm hover:text-white transition">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Logic -->
+    <script>
+        // --- Utilities ---
+        const formatKES = (n) => n ? n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-';
+        const formatPct = (n) => {
+            if (n == null) return '-';
+            const color = n >= 0 ? 'text-emerald-400' : 'text-rose-400';
+            const sign = n >= 0 ? '+' : '';
+            return `<span class="${color}">${sign}${n.toFixed(2)}%</span>`;
+        };
+        const getSignalBadge = (signal) => {
+            if (!signal) return '';
+            if (signal.includes('Bargain') || signal.includes('Buy'))
+                return `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">💎 BARGAIN</span>`;
+            if (signal.includes('Hot') || signal.includes('Sell'))
+                return `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">🔥 HOT</span>`;
+            if (signal.includes('Momentum'))
+                return `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">🚀 MOMENTUM</span>`;
+            return `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700">${signal.split(' ')[0]}</span>`;
+        };
+
+        // --- 1. TOAST NOTIFICATIONS ---
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+
+            const colors = {
+                success: 'bg-emerald-600/90 text-white border-emerald-500/50',
+                error: 'bg-rose-600/90 text-white border-rose-500/50',
+                info: 'bg-blue-600/90 text-white border-blue-500/50'
+            };
+
+            toast.className = `${colors[type]} px-6 py-4 rounded-xl shadow-2xl backdrop-blur-md transform transition-all duration-500 translate-y-10 opacity-0 flex items-center gap-3 min-w-[320px] border border-t pointer-events-auto`;
+            toast.innerHTML = `
+                <div class="p-1 bg-white/20 rounded-full">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        ${type === 'success' ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>' :
+                    type === 'error' ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>' :
+                        '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>'}
+                    </svg>
+                </div>
+                <span class="font-medium text-sm tracking-wide">${message}</span>
+            `;
+
+            container.appendChild(toast);
+
+            requestAnimationFrame(() => toast.classList.remove('translate-y-10', 'opacity-0'));
+            setTimeout(() => {
+                toast.classList.add('translate-y-4', 'opacity-0');
+                setTimeout(() => toast.remove(), 500);
+            }, 3000);
+        }
+
+        // --- 2. MODAL LOGIC ---
+        let currentModalTicker = null;
+        let modalChartInstance = null;
+
+        async function openModal(ticker) {
+            currentModalTicker = ticker;
+            const modal = document.getElementById('stock-modal');
+            const panel = document.getElementById('modal-panel');
+            const backdrop = document.getElementById('modal-backdrop');
+
+            modal.classList.remove('hidden');
+            requestAnimationFrame(() => {
+                panel.classList.remove('translate-x-full');
+                backdrop.classList.remove('opacity-0');
+            });
+
+            // Reset/Loading
+            document.getElementById('modal-ticker').textContent = ticker;
+            document.getElementById('modal-name').textContent = 'Fetching market data...';
+            document.getElementById('modal-price').textContent = '...';
+            document.getElementById('modal-change').innerHTML = '';
+
+            try {
+                const data = await fetch(`/api/stock/${ticker}`).then(r => r.json());
+
+                if (data.error) throw new Error(data.error);
+
+                // Update Modal Content
+                document.getElementById('modal-ticker').textContent = data.ticker;
+                document.getElementById('modal-name').textContent = data.name;
+
+                const safePrice = typeof data.price === 'number' ? data.price : 0;
+                const safeChange = typeof data.change === 'number' ? data.change : 0;
+                const safeChangePct = typeof data.change_pct === 'number' ? data.change_pct : 0;
+
+                document.getElementById('modal-price').textContent = safePrice.toFixed(2);
+
+                const changeElem = document.getElementById('modal-change');
+                changeElem.textContent = `${safeChange > 0 ? '+' : ''}${safeChange.toFixed(2)}`;
+                changeElem.className = `text-lg font-bold ${safeChange >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+
+                // Fundamentals / Valuation
+                const val = data.valuation || {};
+                document.getElementById('modal-pe').textContent = val.pe_ratio ? val.pe_ratio.toFixed(2) : '--';
+                document.getElementById('modal-yield').textContent = val.dividend_yield ? val.dividend_yield.toFixed(1) + '%' : '--';
+                document.getElementById('modal-graham').textContent = val.graham_number ? val.graham_number.toFixed(2) : '--';
+
+                const intrinsicElem = document.getElementById('modal-intrinsic');
+                intrinsicElem.textContent = val.intrinsic_status || 'Unknown';
+
+                // Dynamic Badge Styling
+                if (val.intrinsic_status && val.intrinsic_status.includes('Undervalued')) {
+                    intrinsicElem.className = "px-2 py-1 bg-emerald-500/10 text-emerald-400 text-xs rounded border border-emerald-500/20 w-fit font-bold";
+                } else if (val.intrinsic_status && val.intrinsic_status.includes('Overvalued')) {
+                    intrinsicElem.className = "px-2 py-1 bg-rose-500/10 text-rose-400 text-xs rounded border border-rose-500/20 w-fit font-bold";
+                } else {
+                    intrinsicElem.className = "px-2 py-1 bg-slate-500/10 text-slate-400 text-xs rounded border border-slate-500/20 w-fit";
+                }
+
+                // Market Stats
+                const safeLow = typeof data.day_low === 'number' ? data.day_low : 0;
+                const safeHigh = typeof data.day_high === 'number' ? data.day_high : 0;
+                const safeVol = typeof data.volume === 'number' ? data.volume : 0;
+
+                document.getElementById('modal-range').textContent = `${safeLow.toFixed(2)} - ${safeHigh.toFixed(2)}`;
+                document.getElementById('modal-vol').textContent = safeVol.toLocaleString();
+
+                const isPos = safeChange >= 0;
+                const changeHtml = `<span class="${isPos ? 'text-emerald-400' : 'text-rose-400'} flex items-center gap-1">
+                                    ${isPos ? '▲' : '▼'} ${Math.abs(safeChange).toFixed(2)} (${safeChangePct.toFixed(2)}%)
+                                    <span class="text-slate-500 ml-1 text-[10px]">Today</span></span>`;
+                document.getElementById('modal-change').innerHTML = changeHtml;
+
+                document.getElementById('modal-score').textContent = data.composite_score?.toFixed(0) || '-';
+                const sigElem = document.getElementById('modal-signal');
+                if (sigElem) {
+                    sigElem.innerHTML = getSignalBadge(data.signal);
+                }
+
+                // Metrics
+                document.getElementById('modal-risk').textContent = (data.risk_score?.toFixed(0) || '-') + '/100';
+                document.getElementById('modal-risk').className = `font-mono text-lg ${data.risk_score > 70 ? 'text-rose-400' : 'text-emerald-400'}`;
+
+                document.getElementById('modal-yield').textContent = (data.dividend_yield || 0).toFixed(1) + '%';
+                document.getElementById('modal-momentum').textContent = (data.momentum_score || 0).toFixed(0);
+
+                // RSI (Mock if not in API)
+                document.getElementById('modal-rsi').textContent = 'Loading...';
+                // We could fetch /api/predict/ticker to get RSI if needed, or assume backend sends it next time.
+                // For now, let's just leave it or fetch prediction.
+                fetchPredictionForModal(ticker);
+
+                // Chart
+                loadModalChart(ticker);
+
+            } catch (e) {
+                console.error(e);
+                showToast('Failed to load stock details', 'error');
+                closeModal();
+            }
+        }
+
+        async function fetchPredictionForModal(ticker) {
+            try {
+                const pred = await fetch(`/api/predict/${ticker}`).then(r => r.json());
+                // If API returns trend analysis with RSI
+                if (pred.trend_analysis && pred.trend_analysis.rsi) {
+                    document.getElementById('modal-rsi').textContent = pred.trend_analysis.rsi.toFixed(1);
+                } else {
+                    document.getElementById('modal-rsi').textContent = '-';
+                }
+            } catch (e) { document.getElementById('modal-rsi').textContent = '-'; }
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('stock-modal');
+            const panel = document.getElementById('modal-panel');
+            const backdrop = document.getElementById('modal-backdrop');
+
+            panel.classList.add('translate-x-full');
+            backdrop.classList.add('opacity-0');
+            setTimeout(() => modal.classList.add('hidden'), 300);
+        }
+
+        async function loadModalChart(ticker) {
+            const ctx = document.getElementById('modal-chart').getContext('2d');
+            if (modalChartInstance) modalChartInstance.destroy();
+
+            const history = await fetch(`/api/history/${ticker}`).then(r => r.json());
+            const labels = history.map(d => new Date(d.Date).toLocaleDateString());
+            const prices = history.map(d => d.Close);
+
+            // Create Gradient
+            const gradient = ctx.createLinearGradient(0, 0, 0, 200);
+            gradient.addColorStop(0, 'rgba(16, 185, 129, 0.2)');
+            gradient.addColorStop(1, 'rgba(16, 185, 129, 0)');
+
+            modalChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Price',
+                        data: prices,
+                        borderColor: '#10b981',
+                        backgroundColor: gradient,
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        pointHoverRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: false },
+                        y: {
+                            grid: { color: '#334155' },
+                            ticks: { color: '#94a3b8' }
+                        }
+                    },
+                    interaction: {
+                        intersect: false,
+                        mode: 'index',
+                    },
+                }
+            });
+        }
+
+        async function addToPortfolioFromModal() {
+            if (!currentModalTicker) return;
+            const price = parseFloat(document.getElementById('modal-price').textContent.replace(/,/g, ''));
+            const qtyStr = prompt(`Add ${currentModalTicker} to simulator.\n\nEnter Quantity:`, "100");
+
+            if (qtyStr) {
+                const qty = parseFloat(qtyStr);
+                if (isNaN(qty) || qty <= 0) {
+                    showToast('Invalid quantity', 'error');
+                    return;
+                }
+
+                try {
+                    const res = await fetch('/api/portfolio/add', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            ticker: currentModalTicker,
+                            qty: qty,
+                            price: price
+                        })
+                    }).then(r => r.json());
+
+                    if (res.success) {
+                        showToast(`Bought ${qty} ${currentModalTicker} @ ${price}`, 'success');
+                        closeModal();
+                        // Refresh portfolio chart
+                        calculatePortfolio();
+                        // Also trigger data refresh just in case
+                        refreshData();
+                    } else {
+                        showToast(res.message, 'error');
+                    }
+                } catch (e) {
+                    showToast('Network error', 'error');
+                }
+            }
+        }
+
+        // --- 3. SEARCH & RENDER ---
+        const searchInput = document.getElementById('stock-search');
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                const term = e.target.value.toLowerCase();
+                const cards = document.querySelectorAll('#stock-grid > div');
+                let found = 0;
+
+                cards.forEach(card => {
+                    // We store data attributes for search
+                    const ticker = card.getAttribute('data-ticker')?.toLowerCase() || "";
+                    const name = card.getAttribute('data-name')?.toLowerCase() || "";
+
+                    if (ticker.includes(term) || name.includes(term)) {
+                        card.style.display = 'block';
+                        found++;
+                    } else {
+                        card.style.display = 'none';
+                    }
+                });
+            });
+        }
+
+        function renderStockCards(stocks) {
+            const grid = document.getElementById('stock-grid');
+            if (stocks.length === 0) return;
+
+            // Note: Added onclick="openModal(...)" and data-ticker/name for search
+            grid.innerHTML = stocks.map(s => `
+                <div class="glass-card rounded-lg p-4 hover:bg-slate-800 transition cursor-pointer group relative overflow-hidden border border-transparent hover:border-slate-700" 
+                     onclick="openModal('${s.ticker}')"
+                     data-ticker="${s.ticker}" 
+                     data-name="${s.name}">
+                     
+                    <div class="absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition duration-500"></div>
+
+                    <div class="relative z-10">
+                        <div class="flex justify-between items-start mb-2">
+                            <div>
+                                <div class="font-bold text-lg text-white flex items-center gap-2">
+                                    ${s.ticker}
+                                    ${getSignalBadge(s.signal)}
+                                </div>
+                                <div class="text-xs text-slate-400 truncate max-w-[150px]">${s.name}</div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-white font-mono font-bold">${formatKES(s.price)}</div>
+                                <div class="text-xs font-mono">${formatPct(s.change_pct)}</div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex justify-between items-end mt-4">
+                            <div class="space-y-1">
+                                <div class="text-[10px] uppercase text-slate-500 font-bold">Score</div>
+                                <div class="text-sm font-bold text-purple-400 font-mono">${s.composite_score?.toFixed(0)}</div>
+                            </div>
+                             <div class="space-y-1 text-right">
+                                <div class="text-[10px] uppercase text-slate-500 font-bold">Sharpe</div>
+                                <div class="text-sm font-bold text-amber-400 font-mono">${s.sharpe_ratio?.toFixed(2)}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // --- EXISTING LOGIC (Charts/Loading) ---
+        let portfolioChart = null;
+
+        function updatePortfolioChart(labels, data, colors) {
+            const ctx = document.getElementById('portfolioChart').getContext('2d');
+
+            if (portfolioChart) portfolioChart.destroy();
+
+            portfolioChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: colors,
+                        borderColor: '#1e293b',
+                        borderWidth: 2,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '70%',
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#0f172a',
+                            titleColor: '#e2e8f0',
+                            bodyColor: '#e2e8f0',
+                            borderColor: '#334155',
+                            borderWidth: 1,
+                            callbacks: {
+                                label: function (context) {
+                                    return ` ${context.label}: ${context.raw}%`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        async function loadDashboard() {
+            try {
+                // 1. Summary
+                const summary = await fetch('/api/summary').then(r => r.json());
+
+                // Market Status
+                const statusEl = document.querySelector('.glass-card span.text-xl');
+                if (statusEl) {
+                    const status = summary.market_status || 'CLOSED';
+                    statusEl.textContent = status;
+                    if (status === 'OPEN') {
+                        statusEl.className = 'text-xl font-bold text-emerald-400 mt-1';
+                    } else {
+                        statusEl.className = 'text-xl font-bold text-rose-500 mt-1';
+                    }
+                }
+
+                document.getElementById('gainers-count').textContent = summary.gainers_count || 0;
+                document.getElementById('losers-count').textContent = summary.losers_count || 0;
+                document.getElementById('candidates-count').textContent = summary.buy_candidates_count || 0;
+                document.getElementById('last-update').textContent = summary.last_update
+                    ? new Date(summary.last_update * 1000).toLocaleTimeString() : '-';
+
+                // 2. Alerts Ticker
+                loadTicker();
+
+                // 3. Top Stocks (Cards) - INCREASED LIMIT to 8 for grid filling
+                const top = await fetch('/api/top?limit=12').then(r => r.json());
+                renderStockCards(top);
+
+                // 4. Buy List
+                const candidates = await fetch('/api/buy_candidates').then(r => r.json());
+                renderBuyList(candidates.value ? candidates.value.slice(0, 5) : []);
+
+            } catch (e) {
+                console.error("Dashboard Load Error:", e);
+                showToast("Connection lost. Retrying...", "error");
+            }
+        }
+
+        async function loadTicker() {
+            try {
+                const alerts = await fetch('/api/alerts').then(r => r.json());
+                const ticker = document.getElementById('smart-ticker');
+
+                if (alerts.length === 0) {
+                    ticker.innerHTML = '<span class="text-xs text-slate-500">Market is quiet... NO signals yet.</span>';
+                    return;
+                }
+
+                ticker.innerHTML = alerts.map(a => {
+                    const color = a.type === 'success' ? 'text-emerald-400' :
+                        a.type === 'warning' ? 'text-rose-400' : 'text-blue-400';
+                    return `<span class="text-sm font-medium ${color} mx-4 flex items-center">${a.text}</span>`;
+                }).join('<span class="text-slate-700">|</span>');
+            } catch (e) { console.error(e); }
+        }
+
+        function renderBuyList(stocks) {
+            const list = document.getElementById('buy-list');
+            if (stocks.length === 0) {
+                list.innerHTML = '<div class="text-xs text-slate-500 italic">No bargain buys found.</div>';
+                return;
+            }
+
+            // Also made these clickable
+            list.innerHTML = stocks.map(s => `
+                <div class="flex justify-between items-center p-2 rounded hover:bg-slate-800 transition border border-transparent hover:border-slate-700 cursor-pointer" onclick="openModal('${s.ticker}')">
+                    <div class="flex flex-col">
+                        <span class="font-bold text-sm text-emerald-300">${s.ticker}</span>
+                        <span class="text-[10px] text-slate-500">Score: ${s.composite_score?.toFixed(0)}</span>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-sm text-white">${formatKES(s.price)}</div>
+                         <div class="text-[10px] text-emerald-500">Conf: ${s.confidence}%</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function calculatePortfolio() {
+            const budget = parseFloat(document.getElementById('budget-input').value) || 100000;
+            try {
+                const res = await fetch('/api/portfolio/optimize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ budget })
+                });
+
+                if (res.status === 503) {
+                    document.getElementById('p-return-center').textContent = '...';
+                    showToast("Market data initializing... please wait.", "info");
+                    return;
+                }
+
+                const data = await res.json();
+
+                if (data.error) {
+                    showToast(data.error, "error");
+                    return;
+                }
+
+                // Metrics
+                const safeExpectedReturn = data.metrics?.expected_return || 0;
+                const safeSharpe = data.metrics?.sharpe_ratio || 0;
+                const safeRisk = data.metrics?.risk_score || 0;
+
+                document.getElementById('p-return-center').textContent = (safeExpectedReturn * 100).toFixed(1) + '%';
+                document.getElementById('p-sharpe').textContent = safeSharpe.toFixed(2);
+                document.getElementById('p-risk').textContent = safeRisk.toFixed(0);
+
+                // Chart
+                if (data.allocations) {
+                    const labels = data.allocations.map(a => a.ticker);
+                    const values = data.allocations.map(a => (a.weight * 100).toFixed(1));
+                    const colors = [
+                        '#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#ef4444'
+                    ];
+                    updatePortfolioChart(labels, values, colors);
+                }
+
+            } catch (e) {
+                console.error(e);
+                // showToast("Portfolio optimization failed", "error"); 
+            }
+        }
+
+        async function refreshData() {
+            await fetch('/api/refresh', { method: 'POST' });
+            showToast("Market data refreshed!", "info");
+            loadDashboard();
+        }
+
+        // Global Export
+        window.openModal = openModal;
+        window.closeModal = closeModal;
+        window.addToPortfolioFromModal = addToPortfolioFromModal;
+        window.openTradeModal = openTradeModal;
+        window.closeTradeModal = closeTradeModal;
+        window.submitTrade = submitTrade;
+
+        // --- 4. TRADE MODAL LOGIC ---
+        function openTradeModal() {
+            document.getElementById('trade-modal').classList.remove('hidden');
+            // Populate datalist if empty
+            const datalist = document.getElementById('stock-options');
+            if (datalist.children.length === 0) {
+                fetch('/api/stocks').then(r => r.json()).then(stocks => {
+                    datalist.innerHTML = stocks.map(s => `<option value="${s.ticker}">${s.name} (${s.price})</option>`).join('');
+                });
+            }
+        }
+        function closeTradeModal() {
+            document.getElementById('trade-modal').classList.add('hidden');
+        }
+        async function submitTrade() {
+            const ticker = document.getElementById('trade-ticker').value;
+            const qty = parseFloat(document.getElementById('trade-qty').value);
+            const price = parseFloat(document.getElementById('trade-price').value);
+
+            if (!ticker || !qty || !price) {
+                showToast("Please fill all fields", "error");
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/portfolio/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker, qty, price })
+                }).then(r => r.json());
+
+                if (res.success) {
+                    showToast(`Added ${Math.abs(qty)} ${ticker}`, 'success');
+                    closeTradeModal();
+                    calculatePortfolio();
+                } else {
+                    showToast(res.message, 'error');
+                }
+            } catch (e) { showToast("Network error", "error"); }
+        }
+
+        // Init
+        loadDashboard();
+        calculatePortfolio();
+
+        // Auto refresh
+        setInterval(loadDashboard, 60000);
+
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,61 @@
+# Environment variables - NEVER commit these
+.env
+.env.local
+.env.*.local
+
+# Databases
+*.db
+*.sqlite3
+portfolio.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+venv/
+env/
+.venv/
+
+# Logs & temporary output files
+*.log
+logs/
+*.txt
+!requirements*.txt
+
+# Debug & test scripts (not part of core codebase)
+debug_*.py
+check_*.py
+test_*.py
+_*.py
+evaluate_*.py
+fetch_*.py
+run_*.py
+
+# Generated files
+*.png
+*.jpg
+*.jpeg
+static/charts/
+templates/temp/
+
+# Node / Frontend build
+frontend/node_modules/
+frontend/dist/
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+mysql_data/

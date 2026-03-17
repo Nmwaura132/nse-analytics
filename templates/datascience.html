@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NSE Data Science View</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-card: #21262d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --accent-blue: #58a6ff;
+            --accent-gold: #f0c14b;
+            --accent-purple: #a371f7;
+            --border: #30363d;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        h1 {
+            font-size: 26px;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            margin-right: 15px;
+            font-size: 14px;
+        }
+
+        .nav-link:hover {
+            color: var(--accent-blue);
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            background: var(--bg-secondary);
+            padding: 15px;
+            border-radius: 8px;
+            align-items: center;
+        }
+
+        input {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 15px;
+        }
+
+        button {
+            background: var(--accent-blue);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 3fr 1fr;
+            gap: 20px;
+        }
+
+        .chart-container {
+            background: var(--bg-secondary);
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            height: 600px;
+        }
+
+        .analysis-panel {
+            background: var(--bg-secondary);
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+
+        .metric {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .metric-label {
+            color: var(--text-secondary);
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+
+        .metric-value {
+            font-size: 24px;
+            font-weight: 700;
+            margin-top: 5px;
+        }
+
+        .trend-up {
+            color: var(--accent-green);
+        }
+
+        .trend-down {
+            color: var(--accent-red);
+        }
+
+        .loading {
+            text-align: center;
+            color: var(--text-secondary);
+            padding: 50px;
+        }
+
+        /* Plotly dark theme overrides */
+        .js-plotly-plot .plotly .modebar {
+            opacity: 0.5;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div style="display: flex; align-items: center; gap: 20px;">
+                <h1>NSE Data Science</h1>
+                <a href="/" class="nav-link">← Dashboard</a>
+                <a href="/portfolio" class="nav-link">My Portfolio</a>
+            </div>
+            <div class="header-actions">
+                <span style="color: var(--text-secondary); font-size: 13px;">Powered by Scikit-Learn</span>
+            </div>
+        </header>
+
+        <div class="controls" style="display: flex; gap: 15px; flex-wrap: wrap;">
+            <input type="text" id="ticker-input" placeholder="Enter Ticker (e.g. SCOM)" value="SCOM">
+            <select id="strategy-input"
+                style="background: var(--bg-card); border: 1px solid var(--border); color: var(--text-primary); padding: 10px; border-radius: 6px; font-size: 15px;">
+                <option value="MACD">MACD Crossover</option>
+                <option value="RSI">RSI Mean Reversion</option>
+            </select>
+            <input type="number" id="capital-input" placeholder="Initial Capital" value="100000" style="width: 150px;">
+            <button onclick="loadAnalysis()">Run ML & Backtest</button>
+        </div>
+
+        <div class="grid">
+            <div class="chart-container" id="chart-div">
+                <!-- Plotly Chart -->
+            </div>
+
+            <div class="analysis-panel" id="analysis-panel">
+                <div class="loading">Load a ticker to see ML analysis</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadAnalysis() {
+            const ticker = document.getElementById('ticker-input').value.toUpperCase();
+            const panel = document.getElementById('analysis-panel');
+            const chartDiv = document.getElementById('chart-div');
+
+            panel.innerHTML = '<div class="loading">Running ML Models...</div>';
+
+            try {
+                // Fetch History
+                const histRes = await fetch(`/api/history/${ticker}`);
+                const histData = await histRes.json();
+
+                if (histData.error) {
+                    panel.innerHTML = `<div class="metric-value trend-down">Error: ${histData.error}</div>`;
+                    return;
+                }
+
+                // Fetch Predictions
+                const predRes = await fetch(`/api/predict/${ticker}`);
+                const predData = await predRes.json();
+
+                // Fetch Backtest
+                const strategy = document.getElementById('strategy-input').value;
+                const capital = document.getElementById('capital-input').value;
+                const btRes = await fetch(`/api/backtest/${ticker}?strategy=${strategy}&capital=${capital}`);
+                const btData = await btRes.json();
+
+                // Render Chart
+                renderChart(histData, predData, btData, ticker);
+
+                // Render Panel
+                renderPanel(predData, btData, histData[histData.length - 1], strategy);
+
+            } catch (e) {
+                console.error(e);
+                panel.innerHTML = `<div class="metric-value trend-down">Failed to load analysis</div>`;
+            }
+        }
+
+        function renderChart(data, ml, bt, ticker) {
+            const dates = data.map(d => d.Date);
+            const close = data.map(d => d.Close);
+
+            // Candlestick
+            const trace1 = {
+                x: dates,
+                close: close,
+                decreasing: { line: { color: '#f85149' } },
+                increasing: { line: { color: '#3fb950' } },
+                high: data.map(d => d.High),
+                low: data.map(d => d.Low),
+                open: data.map(d => d.Open),
+                type: 'candlestick',
+                name: ticker,
+                yaxis: 'y1'
+            };
+
+            // Trend Line (Linear Regression)
+            const trendY = ml.trend_analysis.prediction_line;
+            const trace2 = {
+                x: dates,
+                y: trendY,
+                mode: 'lines',
+                line: { color: '#58a6ff', dash: 'dot', width: 2 },
+                name: 'ML Trend (LinReg)',
+                yaxis: 'y1'
+            };
+
+            const traces = [trace1, trace2];
+
+            // Add Equity Curve if backtest succeeded
+            if (bt && bt.equity_curve) {
+                const btDates = bt.equity_curve.map(d => d.date);
+                const btValues = bt.equity_curve.map(d => d.strategy_value);
+
+                const trace3 = {
+                    x: btDates,
+                    y: btValues,
+                    mode: 'lines',
+                    line: { color: '#a371f7', width: 2 },
+                    name: 'Strategy Equity Curve',
+                    yaxis: 'y2'
+                };
+                traces.push(trace3);
+            }
+
+            const layout = {
+                dragmode: 'zoom',
+                margin: { r: 50, t: 25, b: 40, l: 60 },
+                showlegend: true,
+                xaxis: {
+                    autorange: true,
+                    domain: [0, 1],
+                    range: [dates[0], dates[dates.length - 1]],
+                    rangeslider: { visible: false },
+                    title: 'Date',
+                    type: 'date',
+                    gridcolor: '#30363d'
+                },
+                yaxis: {
+                    autorange: true,
+                    domain: [0, 1],
+                    type: 'linear',
+                    gridcolor: '#30363d',
+                    title: 'Price'
+                },
+                yaxis2: {
+                    title: 'Equity Value (KES)',
+                    titlefont: { color: '#a371f7' },
+                    tickfont: { color: '#a371f7' },
+                    overlaying: 'y',
+                    side: 'right'
+                },
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#c9d1d9' }
+            };
+
+            Plotly.newPlot('chart-div', traces, layout);
+        }
+
+        function renderPanel(ml, bt, lastBar, strategyName) {
+            const trend = ml.trend_analysis;
+            const forecast = ml.price_forecast;
+
+            const trendColor = trend.slope > 0 ? 'trend-up' : 'trend-down';
+            const changeColor = forecast.change_forecast > 0 ? 'trend-up' : 'trend-down';
+
+            let btHtml = '';
+            if (bt && bt.metrics) {
+                const alphaColor = bt.metrics.alpha > 0 ? 'trend-up' : 'trend-down';
+                const stratColor = bt.metrics.strategy_return_pct > 0 ? 'trend-up' : 'trend-down';
+                btHtml = `
+                    <div class="metric" style="background: #1c2128; padding: 15px; border-radius: 8px; margin-top: 15px;">
+                        <div class="metric-label" style="color: #a371f7;">${strategyName} Backtest Results</div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 10px;">
+                            <div>
+                                <div style="font-size: 11px; color: #8b949e;">Strategy ROI</div>
+                                <div class="metric-value ${stratColor}" style="font-size: 18px;">${bt.metrics.strategy_return_pct.toFixed(2)}%</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: #8b949e;">Buy & Hold</div>
+                                <div class="metric-value" style="font-size: 18px;">${bt.metrics.baseline_return_pct.toFixed(2)}%</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 10px; border-top: 1px dashed #30363d; padding-top: 10px;">
+                            <div>
+                                <div style="font-size: 11px; color: #8b949e;">Alpha</div>
+                                <div class="${alphaColor}" style="font-weight: bold;">${bt.metrics.alpha.toFixed(2)}%</div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="font-size: 11px; color: #8b949e;">Win Rate</div>
+                                <div>${bt.metrics.win_rate_pct.toFixed(1)}% (${bt.metrics.total_trades} trades)</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            const html = `
+                <div class="metric">
+                    <div class="metric-label">Current Price</div>
+                    <div class="metric-value">${lastBar.Close.toFixed(2)}</div>
+                </div>
+
+                <div class="metric">
+                    <div class="metric-label">ML Forecast (Next Close)</div>
+                    <div class="metric-value ${changeColor}">
+                        ${forecast.predicted_price.toFixed(2)}
+                        <span style="font-size: 14px">(${(forecast.change_forecast * 100).toFixed(2)}%)</span>
+                    </div>
+                    <div style="font-size: 12px; color: #8b949e; margin-top: 5px;">
+                        Model: Random Forest (MSE: ${forecast.mse.toFixed(4)})
+                    </div>
+                </div>
+
+                <div class="metric" style="border-bottom: none;">
+                    <div class="metric-label">Long-Term Trend</div>
+                    <div class="metric-value ${trendColor}">${trend.trend}</div>
+                    <div style="font-size: 12px; color: #8b949e; margin-top: 5px;">
+                        Slope: ${trend.slope.toFixed(4)} | R²: ${trend.r2.toFixed(2)}
+                    </div>
+                </div>
+                
+                ${btHtml}
+
+                <div class="metric" style="border-bottom: none; margin-top: 20px;">
+                    <p style="font-size: 11px; color: #8b949e; margin-top: 10px; text-align: center;">
+                        Models re-run automatically on fetch. Use real CSVs in /data/history for accuracy.
+                    </p>
+                </div>
+            `;
+
+            document.getElementById('analysis-panel').innerHTML = html;
+        }
+
+        // Load default
+        loadAnalysis();
+    </script>
+</body>
+
+</html>
