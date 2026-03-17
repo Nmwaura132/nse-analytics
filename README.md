@@ -4,6 +4,8 @@ A full-stack platform for real-time Nairobi Securities Exchange (NSE) stock anal
 
 ![Stack](https://img.shields.io/badge/Backend-Django-green) ![Stack](https://img.shields.io/badge/Frontend-React-blue) ![Stack](https://img.shields.io/badge/ML-scikit--learn-orange) ![Stack](https://img.shields.io/badge/Deploy-Docker-blue)
 
+> **Disclaimer:** This project is for educational and research purposes only. Nothing in this application constitutes financial advice. Do not make investment decisions based on this tool. Past performance of any stock or model does not guarantee future results.
+
 ---
 
 ## Features

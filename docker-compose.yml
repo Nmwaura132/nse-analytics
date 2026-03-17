@@ -3,50 +3,49 @@ services:
     image: mysql:8.0
     container_name: nse_mysql
     restart: always
+    env_file: .env
     environment:
-      MYSQL_DATABASE: nse_portfolio
-      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: ${DB_NAME:-nse_portfolio}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-changeme}
     ports:
       - "3316:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build: .
     container_name: nse_django_api
     restart: always
-    volumes:
-      - .:/app
-    ports:
-      - "8000:8000"
+    env_file: .env
     environment:
       - DB_HOST=db
       - DB_PORT=3306
-      - DB_NAME=nse_portfolio
-      - DB_USER=root
-      - DB_PASSWORD=password
       - PYTHONPATH=/app
+    ports:
+      - "8000:8000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   bot:
     build: .
     container_name: nse_telegram_bot
     restart: always
-    volumes:
-      - .:/app
-    working_dir: /app
+    env_file: .env
     environment:
       - DB_HOST=db
       - DB_PORT=3306
-      - DB_NAME=nse_portfolio
-      - DB_USER=root
-      - DB_PASSWORD=password
       - PYTHONPATH=/app
-    depends_on:
-      - db
-      - api
+    working_dir: /app
     command: python nse_bot.py
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   mysql_data:

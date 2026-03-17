@@ -23,6 +23,9 @@ COPY . /app/
 # Environment variable to include /app in python path (for imports like comprehensive_analyzer)
 ENV PYTHONPATH=/app
 
-# Start django from the correct sub-directory
+# Collect static files
 WORKDIR /app/nse_backend
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+RUN python manage.py collectstatic --noinput
+
+# Run with gunicorn in production (4 workers)
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120"]
