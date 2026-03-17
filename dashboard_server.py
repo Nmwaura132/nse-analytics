@@ -1,4 +1,3 @@
-print("DEBUG: dashboard_server.py script entered")
 """
 NSE Dashboard Server
 Real-time market dashboard powered by RapidAPI NSE data.
