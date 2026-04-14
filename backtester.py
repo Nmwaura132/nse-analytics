@@ -165,31 +165,37 @@ class Backtester:
         p_df['Drawdown'] = (p_df['strategy_value'] - p_df['Peak']) / p_df['Peak']
         max_drawdown = p_df['Drawdown'].min() * 100
         
-        # Calculate Win Rate
-        winning_trades = 0
-        total_closed_trades = 0
-        
-        for i in range(1, len(trades), 2): # Pair Buys with Sells
-            if i < len(trades):
-                buy_price = trades[i-1]['price']
-                sell_price = trades[i]['price']
-                if sell_price > buy_price:
-                    winning_trades += 1
-                total_closed_trades += 1
-                
+        # Calculate Win Rate — only count completed BUY→SELL roundtrips
+        # (avoids index error when the last trade is an open BUY with no SELL)
+        completed_pnl = [
+            trades[i + 1]['price'] - trades[i]['price']
+            for i in range(0, len(trades) - 1, 2)
+            if trades[i]['type'] == 'BUY' and trades[i + 1]['type'] == 'SELL'
+        ]
+        winning_trades     = sum(1 for p in completed_pnl if p > 0)
+        total_closed_trades = len(completed_pnl)
         win_rate = (winning_trades / total_closed_trades * 100) if total_closed_trades > 0 else 0
+
+        # Sharpe Ratio (annualised, risk-free ≈ 0 for simplicity)
+        equity = pd.Series([row['strategy_value'] for row in portfolio_value])
+        daily_returns = equity.pct_change().dropna()
+        sharpe_ratio = (
+            round(float(daily_returns.mean() / daily_returns.std()) * np.sqrt(252), 3)
+            if daily_returns.std() > 0 else 0.0
+        )
         
         return {
             'metrics': {
-                'initial_capital': self.initial_capital,
+                'initial_capital':      self.initial_capital,
                 'strategy_final_value': strategy_final,
                 'baseline_final_value': baseline_final,
-                'strategy_return_pct': strategy_return_pct,
-                'baseline_return_pct': baseline_return_pct,
-                'alpha': strategy_return_pct - baseline_return_pct,
-                'max_drawdown_pct': max_drawdown,
-                'total_trades': len(trades),
-                'win_rate_pct': win_rate
+                'strategy_return_pct':  strategy_return_pct,
+                'baseline_return_pct':  baseline_return_pct,
+                'alpha':                strategy_return_pct - baseline_return_pct,
+                'max_drawdown_pct':     max_drawdown,
+                'sharpe_ratio':         sharpe_ratio,
+                'total_trades':         len(trades),
+                'win_rate_pct':         win_rate,
             },
             'equity_curve': portfolio_value,
             'trades': trades

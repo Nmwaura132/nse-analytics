@@ -1,31 +1,32 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
 
 WORKDIR /app
 
-# Install system dependencies for mysqlclient and ML libraries
+# System deps for mysqlclient, ML libraries, and healthcheck curl
 RUN apt-get update \
-    && apt-get install -y default-libmysqlclient-dev build-essential pkg-config \
+    && apt-get install -y --no-install-recommends \
+       default-libmysqlclient-dev build-essential pkg-config curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install python dependencies via Poetry
+# Install Python deps via Poetry (no dev extras in image)
 COPY pyproject.toml poetry.lock /app/
-RUN pip install --upgrade pip && \
-    pip install poetry && \
-    poetry config virtualenvs.create false && \
-    poetry install --no-interaction --no-ansi --no-root
+RUN pip install --upgrade pip \
+    && pip install poetry \
+    && poetry config virtualenvs.create false \
+    && poetry install --no-interaction --no-ansi --no-root --without dev \
+    && pip install yfinance  # ensure yfinance is available for real NSE data
 
-# Copy the entire nse_pro project
+# Copy application source
 COPY . /app/
 
-# Environment variable to include /app in python path (for imports like comprehensive_analyzer)
-ENV PYTHONPATH=/app
+# Healthcheck — verify the bot process is alive via its HTTP health endpoint
+# (nse_bot.py exposes no HTTP port; we verify the process instead)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD python -c "import os, sys; sys.exit(0 if os.path.exists('/tmp/nse_bot.pid') else 1)" || exit 1
 
-# Collect static files
-WORKDIR /app/nse_backend
-RUN python manage.py collectstatic --noinput
-
-# Run with gunicorn in production (4 workers)
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120"]
+# Use exec-form so Python receives SIGTERM directly (not via shell)
+CMD ["python", "/app/nse_bot.py"]

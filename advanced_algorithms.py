@@ -43,10 +43,24 @@ class EnhancedStock:
 class AdvancedPortfolioAlgorithms:
     """
     Advanced algorithms for portfolio allocation and stock analysis.
+
+    Sharpe note:
+        We annualise the single-day return with a *persistence factor* that
+        conservatively assumes only a fraction of today's move recurs over
+        the year.  0.05 (5 %) was too aggressive — it made almost every stock
+        Sharpe-negative even on up days.  0.15 (15 %) keeps signals in a
+        realistic range while still dampening the raw 252× annualisation.
+    Kelly note:
+        When a stock is *rising* we use the full absolute change as the
+        expected gain; when *falling* we use half the absolute change as the
+        "potential bounce" gain and the full change as the expected loss.
+        This explicit asymmetry reflects the observed fat-left tail on NSE.
     """
-    
-    RISK_FREE_RATE = 0.12  # Kenya T-Bill rate ~12%
-    INFLATION_RATE = 0.06  # Current inflation ~6%
+
+    RISK_FREE_RATE = 0.12          # Kenya 91-day T-Bill rate ~12 %
+    INFLATION_RATE = 0.06          # Current inflation ~6 %
+    # Conservative daily-return persistence (see class docstring)
+    DAILY_PERSISTENCE_FACTOR = 0.15
     
     def __init__(self, stocks: List[EnhancedStock]):
         self.stocks = stocks
@@ -100,22 +114,19 @@ class AdvancedPortfolioAlgorithms:
         if stock.price <= 0:
             return 0
         
-        # Annualize daily return
-        # DAMPING: Assume daily move persists only slightly.
-        # Otherwise +1% daily becomes +1200% annual potentially.
-        # We use a 5% persistence factor for projection.
+        # Annualise daily return with persistence damping (see class docstring)
         daily_return = stock.change / stock.price
-        annual_return = daily_return * 252 * 0.05  
-        
+        annual_return = daily_return * 252 * self.DAILY_PERSISTENCE_FACTOR
+
         # Get volatility
         volatility = self.calculate_volatility_estimate(stock)
         if volatility <= 0:
             volatility = 0.01  # Avoid division by zero
-        
-        # Sharpe = (Annual Return - Risk Free Rate) / Volatility
+
+        # Sharpe = (Annual Return − Risk-Free Rate) / Volatility
         sharpe = (annual_return - self.RISK_FREE_RATE) / volatility
-        
-        # Cap reasonable range
+
+        # Cap to a reasonable display range
         return max(min(sharpe, 5.0), -5.0)
     
     def calculate_kelly_fraction(self, stock: EnhancedStock) -> float:
@@ -135,34 +146,39 @@ class AdvancedPortfolioAlgorithms:
         
         # Estimate win probability from momentum and market context
         if stock.change > 0:
-            # Positive momentum increases win probability
-            p = 0.5 + min(stock.momentum_score / 200, 0.25)  # Max 75% win prob
+            # Positive momentum → higher win probability (max 75 %)
+            p = 0.5 + min(stock.momentum_score / 200, 0.25)
         else:
-            # Negative momentum decreases win probability
-            p = 0.5 - min(abs(stock.change) / stock.price * 10, 0.25)  # Min 25%
-        
+            # Negative momentum → lower win probability (min 25 %)
+            p = 0.5 - min(abs(stock.change) / stock.price * 10, 0.25)
+
         q = 1 - p
-        
-        # Expected gain/loss ratio (odds)
-        expected_gain = abs(stock.change) if stock.change > 0 else abs(stock.change) * 0.5
-        expected_loss = abs(stock.change) if stock.change < 0 else abs(stock.change) * 0.5
-        
+
+        # Expected gain/loss ratio (odds) — see class docstring for asymmetry rationale
+        # Rising stock: full move as potential gain, half move as potential loss.
+        # Falling stock: half move as potential bounce gain, full move as expected loss.
+        if stock.change > 0:
+            expected_gain = abs(stock.change)
+            expected_loss = abs(stock.change) * 0.5
+        else:
+            expected_gain = abs(stock.change) * 0.5
+            expected_loss = abs(stock.change)
+
         if expected_loss <= 0:
             expected_loss = 0.01
-        
+
         b = expected_gain / expected_loss
-        
-        # If no potential gain, don't invest
+
         if b <= 0:
             return 0
-        
-        # Kelly formula
+
+        # Kelly formula: f* = (bp - q) / b
         f = (b * p - q) / b
-        
-        # Use fractional Kelly (1/4) for safety
+
+        # Quarter-Kelly for safety (reduces position size × 4 to limit ruin risk)
         f = f * 0.25
-        
-        # Cap between 0 and 0.25 (max 25% in one position)
+
+        # Hard cap: never allocate more than 25 % of portfolio to a single position
         return max(min(f, 0.25), 0)
     
     def calculate_risk_score(self, stock: EnhancedStock) -> float:

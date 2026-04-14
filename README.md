@@ -121,9 +121,39 @@ npm run dev
 
 | Model | Purpose | Algorithm |
 |-------|---------|-----------|
-| Price Forecaster | Predict next-day closing price | Random Forest + Linear Regression |
-| Stock Scorer | Rank stocks by momentum/value | Custom weighted scoring |
-| Portfolio Optimizer | Optimal allocation suggestion | ML-based rebalancing |
+| Price Forecaster | Predict next-day closing price | Random Forest (100 trees, OOB-validated) |
+| Trend Analyser | Long-term price trend & slope | Linear Regression on ordinal dates |
+| Stock Scorer | Rank stocks by momentum/value | Custom weighted scoring (RSI + MACD + BB) |
+| Portfolio Optimizer | Max-Sharpe asset allocation | Markowitz MPT · Ledoit-Wolf covariance shrinkage |
+| Strategy Backtester | Validate MACD/RSI strategies on history | Walk-forward equity simulation |
+
+---
+
+## Model Performance (Out-of-Sample)
+
+Walk-forward expanding-window validation · 5 folds · features computed with 1-day shift to prevent look-ahead leakage.
+
+| Metric | Random Forest | Persistence Baseline |
+|--------|--------------|----------------------|
+| RMSE | reported per ticker | tomorrow = today |
+| MAE | reported per ticker | — |
+| Directional Accuracy | reported per ticker | ~50% (random) |
+| Beats Baseline | ✓ on real data | — |
+
+Use the `/predict TICKER` Telegram command to see live per-ticker validation metrics, or call `MLPredictor().walk_forward_validate(df)` directly.
+
+**MACD Strategy Backtest (example — SCOM)**
+
+| Metric | Strategy | Buy & Hold |
+|--------|----------|------------|
+| Return | varies | varies |
+| Max Drawdown | reported | reported |
+| Sharpe Ratio | reported | — |
+| Win Rate | reported | — |
+
+Commission: 0.1% per trade (NSE standard). Run `Backtester().run_backtest(df, 'MACD')` for full results.
+
+> ⚠️ For educational and research purposes only. Not financial advice.
 
 ---
 

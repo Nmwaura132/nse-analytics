@@ -67,55 +67,48 @@ class ComprehensiveAnalyzer:
         self.market_data = RapidAPIFetcher()
         self.afx_fetcher = NSEDataFetcher()
     
-    def fetch_all_data(self) -> List[dict]:
-        """Fetch real-time data for all stocks."""
-        return self.market_data.get_all_stocks()
-    
-    def calculate_momentum_score(self, change: float, all_changes: List[float]) -> float:
+
+    def calculate_momentum_score(
+        self,
+        change: float,
+        min_change: float,
+        max_change: float,
+    ) -> float:
         """
         Score based on price change relative to market.
         Range: 0-100
+
+        Accepts pre-computed min/max to avoid O(n²) recomputation inside the
+        per-stock loop of analyze_all_stocks().
         """
         if change is None:
             return 50  # Neutral
-        
-        # Get min/max changes for normalization
-        valid_changes = [c for c in all_changes if c is not None]
-        if not valid_changes:
-            return 50
-        
-        min_change = min(valid_changes)
-        max_change = max(valid_changes)
+
         range_val = max_change - min_change
-        
         if range_val == 0:
             return 50
-        
-        # Normalize to 0-100
+
         score = ((change - min_change) / range_val) * 100
         return max(0, min(100, score))
     
-    def calculate_volume_score(self, volume: float, all_volumes: List[float]) -> float:
+    def calculate_volume_score(self, volume: float, log_max_volume: float) -> float:
         """
         Score based on trading volume relative to market.
         Higher volume = more liquidity = better score.
         Range: 0-100
+
+        Accepts pre-computed log_max_volume to avoid recomputing log(max) for
+        every stock in the batch (O(n) instead of O(n²)).
         """
         if volume is None or volume <= 0:
             return 0
-        
-        valid_volumes = [v for v in all_volumes if v and v > 0]
-        if not valid_volumes:
+
+        if log_max_volume <= 0:
             return 0
-        
-        max_volume = max(valid_volumes)
-        
-        # Log scale to handle extreme variations (SCOM dominates)
+
         import math
         log_volume = math.log10(volume + 1)
-        log_max = math.log10(max_volume + 1)
-        
-        score = (log_volume / log_max) * 100
+        score = (log_volume / log_max_volume) * 100
         return max(0, min(100, score))
     
     def calculate_value_score(self, dividend_yield: Optional[float]) -> float:
@@ -178,28 +171,38 @@ class ComprehensiveAnalyzer:
     def analyze_all_stocks(self, include_fundamentals: bool = False) -> List[StockScore]:
         """
         Analyze all stocks and return scored list.
+        Pre-computes market-wide statistics once before the per-stock loop
+        to avoid O(n²) repeated min/max/log calls.
         """
         print("Fetching real-time market data via RapidAPI...")
         stocks = self.fetch_all_data()
-        
+
         if not stocks:
             print("No stock data retrieved!")
             return []
-        
+
         print(f"Retrieved {len(stocks)} stocks. Calculating scores...")
-        
-        # Extract values for normalization
+
+        # --- Pre-compute normalization stats once ---
+        import math
         all_changes = [s['change'] for s in stocks]
-        all_volumes = [s['volume'] for s in stocks]
-        
+        all_volumes  = [s['volume'] for s in stocks]
+
+        valid_changes = [c for c in all_changes if c is not None]
+        min_change = min(valid_changes) if valid_changes else 0
+        max_change = max(valid_changes) if valid_changes else 0
+
+        valid_volumes = [v for v in all_volumes if v and v > 0]
+        log_max_volume = math.log10(max(valid_volumes) + 1) if valid_volumes else 1
+
         results = []
-        
+
         for stock in stocks:
             ticker = stock['ticker']
-            
-            # Calculate individual scores
-            momentum = self.calculate_momentum_score(stock['change'], all_changes)
-            volume = self.calculate_volume_score(stock['volume'], all_volumes)
+
+            # Use pre-computed stats — O(1) per stock
+            momentum = self.calculate_momentum_score(stock['change'], min_change, max_change)
+            volume   = self.calculate_volume_score(stock['volume'], log_max_volume)
             
             # Fetch fundamentals if requested (slower)
             dps = None

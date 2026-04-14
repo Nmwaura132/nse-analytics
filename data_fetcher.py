@@ -174,9 +174,7 @@ class NSEDataFetcher:
                             df[col] = pd.to_numeric(df[col], errors='coerce')
 
                     return df
-                
-                return df
-                
+
             print(f"No historical data table found for {ticker}")
             return pd.DataFrame()
 
@@ -245,8 +243,6 @@ class NSEDataFetcher:
 
             return result
 
-            return result
-            
         except Exception as e:
             print(f"Error fetching fundamentals for {ticker}: {e}")
             return result

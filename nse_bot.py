@@ -1,15 +1,17 @@
-print("DEBUG: nse_bot.py script entered")
 """
 Interactive NSE Telegram Bot
-Responds to user commands with real-time market data.
+Responds to user commands with real-time market data and AI-powered analysis
+via the OpenClaw gateway.
 """
-import os
-import logging
-from datetime import datetime
-from dotenv import load_dotenv
 import asyncio
+import logging
+import logging.handlers
+import os
+import signal
+import time
+from datetime import datetime
 
-load_dotenv()
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -22,36 +24,83 @@ from ml_predictor import MLPredictor
 from chart_generator import generate_candlestick_chart, generate_forecast_chart, generate_portfolio_chart, generate_analysis_chart
 from dividend_calendar import get_upcoming_dividends, get_user_dividend_income
 from database import PriceAlert, SessionLocal as AlertSessionLocal
+from openclaw_advisor import OpenClawAdvisor
 
-# Setup logging
+# ---------------------------------------------------------------------------
+# Logging — RotatingFileHandler so logs survive between restarts
+# ---------------------------------------------------------------------------
+_log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+_file_handler = logging.handlers.RotatingFileHandler(
+    'nse_bot.log', maxBytes=5 * 1024 * 1024, backupCount=3
+)
+_file_handler.setFormatter(_log_formatter)
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
-    handlers=[
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler(), _file_handler],
 )
 logger = logging.getLogger(__name__)
 
-# Initialize placeholders
-analyzer = None
-ml_predictor = None
+# ---------------------------------------------------------------------------
+# Lazy singletons
+# ---------------------------------------------------------------------------
+analyzer: ComprehensiveAnalyzer | None = None
+ml_predictor: MLPredictor | None = None
+_openclaw = OpenClawAdvisor()  # gracefully no-ops when gateway is down
 
-def get_analyzer():
+
+def get_analyzer() -> ComprehensiveAnalyzer:
     global analyzer
     if analyzer is None:
-        logger.info("First call: Initializing ComprehensiveAnalyzer...")
-        from comprehensive_analyzer import ComprehensiveAnalyzer
+        logger.info("Initialising ComprehensiveAnalyzer...")
         analyzer = ComprehensiveAnalyzer()
     return analyzer
 
-def get_ml():
+
+def get_ml() -> MLPredictor:
     global ml_predictor
     if ml_predictor is None:
-        logger.info("First call: Initializing MLPredictor...")
-        from ml_predictor import MLPredictor
+        logger.info("Initialising MLPredictor...")
         ml_predictor = MLPredictor()
     return ml_predictor
+
+
+# ---------------------------------------------------------------------------
+# Async TTL cache for market data
+# Wraps the blocking analyze_all_stocks() in a thread executor so it never
+# blocks the asyncio event loop.
+# ---------------------------------------------------------------------------
+# NOTE: asyncio.Lock() must NOT be created at module import time in Python
+# 3.10+ — it gets attached to the running loop on first use, so we lazily
+# instantiate it inside the first coroutine call.
+_cache_lock: asyncio.Lock | None = None
+_cache: dict = {"stocks": None, "ts": 0.0}
+CACHE_TTL = 300  # 5 minutes
+
+
+async def get_cached_stocks_async() -> list:
+    """Return cached stocks; refresh in thread pool if TTL has expired."""
+    global _cache_lock
+    if _cache_lock is None:
+        _cache_lock = asyncio.Lock()  # Lazily created inside the running loop
+
+    async with _cache_lock:
+        if _cache["stocks"] and (time.time() - _cache["ts"]) < CACHE_TTL:
+            return _cache["stocks"]
+
+    loop = asyncio.get_running_loop()  # safe inside a coroutine (Python 3.10+)
+    try:
+        stocks = await loop.run_in_executor(None, get_analyzer().analyze_all_stocks)
+    except Exception as exc:
+        logger.error("Failed to fetch stocks: %s", exc)
+        return _cache["stocks"] or []  # serve stale data rather than nothing
+
+    if stocks:
+        async with _cache_lock:
+            _cache["stocks"] = stocks
+            _cache["ts"] = time.time()
+    return stocks or []
 
 
 # ============ HELPER FUNCTIONS ============
@@ -151,29 +200,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 
-# Caching variables
-last_fetch_time = None
-cached_stocks = None
-CACHE_DURATION = 300  # 5 minutes
 
-def get_cached_stocks():
-    """Fetch stocks with simple caching."""
-    global last_fetch_time, cached_stocks
-    
-    now = datetime.now()
-    if cached_stocks and last_fetch_time and (now - last_fetch_time).total_seconds() < CACHE_DURATION:
-        return cached_stocks
-        
+# Keep the synchronous helper for legacy internal callers (non-async jobs).
+# New async command handlers should prefer get_cached_stocks_async().
+def get_cached_stocks() -> list:
+    """Synchronous wrapper used by background jobs and legacy helpers."""
+    # This runs in a background job thread, not the asyncio loop, so it's safe.
+    global _cache
+    if _cache["stocks"] and (time.time() - _cache["ts"]) < CACHE_TTL:
+        return _cache["stocks"]
     try:
-        logging.info("Fetching fresh data from analyzer...")
         stocks = get_analyzer().analyze_all_stocks()
         if stocks:
-            cached_stocks = stocks
-            last_fetch_time = now
-        return stocks
-    except Exception as e:
-        logger.error(f"Error fetching data: {e}")
-        return []
+            _cache["stocks"] = stocks
+            _cache["ts"] = time.time()
+        return stocks or []
+    except Exception as exc:
+        logger.error("Error fetching data: %s", exc)
+        return _cache["stocks"] or []
+
 
 # ============ SECTOR DEFINITIONS ============
 SECTORS = {
@@ -192,62 +237,89 @@ SECTORS = {
 # ... (start/help handlers unmodified) ...
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /report command - Full daily report."""
+    """Handle /report command - Full daily report with AI market summary."""
     try:
         await update.message.reply_text("📊 Fetching market data...")
-        
-        stocks = get_cached_stocks()
+
+        stocks = await get_cached_stocks_async()
         if not stocks:
             await update.message.reply_text("❌ Failed to fetch data. Please try again later.")
             return
-        
+
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         gainers = sorted([s for s in stocks if s.is_gainer], key=lambda x: x.change, reverse=True)[:5]
-        losers = sorted([s for s in stocks if s.is_loser], key=lambda x: x.change)[:5]
-        active = sorted(stocks, key=lambda x: x.volume, reverse=True)[:5]
+        losers  = sorted([s for s in stocks if s.is_loser],  key=lambda x: x.change)[:5]
+        active  = sorted(stocks, key=lambda x: x.volume, reverse=True)[:5]
         buy_candidates = [s for s in stocks if s.composite_score >= 50 and s.is_gainer][:3]
-        
-        total = len(stocks)
+
+        total   = len(stocks)
         g_count = len([s for s in stocks if s.is_gainer])
         l_count = len([s for s in stocks if s.is_loser])
-        
+
+        # --- AI market summary (non-blocking, fires and continues) ---
+        ai_summary = None
+        if _openclaw.is_available():
+            try:
+                top_g = gainers[0] if gainers else None
+                top_l = losers[0]  if losers  else None
+                loop  = asyncio.get_running_loop()  # safe inside coroutine
+                ai_summary = await loop.run_in_executor(
+                    None,
+                    _openclaw.get_market_summary,
+                    {
+                        "total": total,
+                        "gainers": g_count,
+                        "losers":  l_count,
+                        "unchanged": total - g_count - l_count,
+                        "top_gainer": f"{top_g.ticker} +{top_g.change:.2f}" if top_g else None,
+                        "top_loser":  f"{top_l.ticker} {top_l.change:.2f}"  if top_l else None,
+                        "most_active": active[0].ticker if active else None,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("AI market summary failed: %s", exc)
+
         # Build report
         report_lines = [
-            f"📊 *NSE DAILY REPORT*",
+            "📊 *NSE DAILY REPORT*",
             f"_{now}_",
+        ]
+
+        if ai_summary:
+            report_lines += ["", f"🤖 {ai_summary}", ""]
+
+        report_lines += [
             "",
-            f"*MARKET SUMMARY*",
+            "*MARKET SUMMARY*",
             f"📈 Gainers: {g_count} ({100*g_count/total:.0f}%)",
-            f"📉 Losers: {l_count} ({100*l_count/total:.0f}%)",
+            f"📉 Losers:  {l_count} ({100*l_count/total:.0f}%)",
             f"⚪ Unchanged: {total - g_count - l_count}",
             "",
-            "🚀 *TOP GAINERS*"
+            "🚀 *TOP GAINERS*",
         ]
-        
+
         for s in gainers:
             report_lines.append(f"`{s.ticker:6}` {s.price:>8.2f}  {format_change(s.change)}")
-        
-        report_lines.append("")
-        report_lines.append("💔 *TOP LOSERS*")
+
+        report_lines += ["", "💔 *TOP LOSERS*"]
         for s in losers:
             report_lines.append(f"`{s.ticker:6}` {s.price:>8.2f}  {format_change(s.change)}")
-        
-        report_lines.append("")
-        report_lines.append("🔥 *MOST ACTIVE*")
+
+        report_lines += ["", "🔥 *MOST ACTIVE*"]
         for s in active:
             report_lines.append(f"`{s.ticker:6}` Vol: {format_number(s.volume)}")
-        
+
         if buy_candidates:
-            report_lines.append("")
-            report_lines.append("✅ *BUY CANDIDATES*")
+            report_lines += ["", "✅ *BUY CANDIDATES*"]
             for s in buy_candidates:
                 report_lines.append(f"`{s.ticker:6}` {s.price:.2f} | Score: {s.composite_score:.0f}")
-        
+
         await update.message.reply_text("\n".join(report_lines), parse_mode='Markdown')
 
-    except Exception as e:
-        logger.error(f"Report error: {e}")
+    except Exception as exc:
+        logger.error("Report error: %s", exc)
         await update.message.reply_text("❌ An error occurred while generating the report.")
+
 
 
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -751,16 +823,18 @@ async def forecast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Generate chart
         img_buf = generate_forecast_chart(df, ticker, forecast, trend, avg_cost)
         
-        predicted = forecast['predicted_price']
+        predicted  = forecast['predicted_price']
         change_pct = forecast['change_forecast'] * 100
-        signal = "BUY/HOLD" if change_pct > 1 else "CAUTION" if change_pct < -1 else "HOLD"
-        arrow = '↑' if change_pct > 0 else '↓'
-        
-        caption = f"🔮 {ticker} ML Forecast\n"
-        caption += f"Current: {current_price:.2f} KES\n"
+        signal     = "BUY/HOLD" if change_pct > 1 else "CAUTION" if change_pct < -1 else "HOLD"
+        arrow      = '↑' if change_pct > 0 else '↓'
+        data_src   = "📡 Real Data" if forecast.get('is_real_data') else "🔬 Simulated"
+        mse_label  = forecast.get('mse_type', 'in_sample').replace('_', '-')
+
+        caption  = f"🔮 {ticker} ML Forecast  [{data_src}]\n"
+        caption += f"Current:   {current_price:.2f} KES\n"
         caption += f"Predicted: {predicted:.2f} KES ({arrow} {change_pct:+.1f}%)\n"
         caption += f"Trend: {trend['trend']} | Signal: {signal}\n"
-        caption += f"Model: Random Forest (MSE={forecast['mse']:.4f})"
+        caption += f"Model: Random Forest  MSE={forecast['mse']:.4f} ({mse_label})"
         
         await update.message.reply_photo(photo=img_buf, caption=caption)
         
@@ -1130,70 +1204,160 @@ async def dividends_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
 
+# ============ OPENCLAW AI Q&A ============
+
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /ask TICKER [question]
+    Routes a user question about a stock through OpenClaw for an AI answer
+    grounded in the stock's current computed metrics.
+
+    Examples:
+      /ask SCOM should I buy?
+      /ask KPLC is this oversold?
+    """
+    if not context.args:
+        await update.message.reply_text(
+            "🤖 *AI Stock Advisor*\n\n"
+            "Usage: `/ask TICKER [your question]`\n"
+            "Example: `/ask SCOM should I buy?`\n\n"
+            "_Powered by OpenClaw AI_",
+            parse_mode='Markdown'
+        )
+        return
+
+    ticker   = context.args[0].upper()
+    question = " ".join(context.args[1:]) if len(context.args) > 1 else "Should I buy this stock?"
+
+    await update.message.reply_text(f"🤖 Asking OpenClaw about {ticker}...")
+
+    stocks = await get_cached_stocks_async()
+    enhanced, algo = enhance_stocks(stocks)
+
+    target = next((s for s in enhanced if s.ticker == ticker), None)
+    if not target:
+        await update.message.reply_text(
+            f"❌ Stock '{ticker}' not found. Check the ticker and try again."
+        )
+        return
+
+    algo.analyze_stock(target)
+    emoji, signal, conf = algo.get_signal(target)
+
+    metrics = {
+        "price":          target.price,
+        "change_pct":     target.change_pct,
+        "rsi":            None,   # populated if we run get_data for this ticker
+        "sharpe_ratio":   round(target.sharpe_ratio, 3),
+        "risk_score":     round(target.risk_score, 1),
+        "momentum_score": round(target.momentum_score, 1),
+        "kelly_fraction": round(target.kelly_fraction, 3),
+        "trend_signal":   signal,
+        "confidence":     conf,
+        "volume":         target.volume,
+    }
+
+    loop   = asyncio.get_running_loop()  # safe inside coroutine
+    answer = await loop.run_in_executor(
+        None,
+        _openclaw.answer_stock_question,
+        ticker,
+        question,
+        metrics,
+    )
+
+    if not answer:
+        await update.message.reply_text(
+            "⚠️ OpenClaw AI is not available right now.\n"
+            "Start the OpenClaw gateway: `openclaw gateway run`",
+            parse_mode='Markdown'
+        )
+        return
+
+    msg = (
+        f"🤖 *OpenClaw AI — {ticker}*\n"
+        f"_Q: {question}_\n\n"
+        f"{answer}\n\n"
+        f"_Signal: {emoji} {signal}  |  Confidence: {conf}%_"
+    )
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+
 # ============ MAIN ============
 
 def main():
     """Start the bot."""
     token = os.getenv('TELEGRAM_BOT_TOKEN')
-    
+
     if not token:
-        print("Error: TELEGRAM_BOT_TOKEN not set in .env")
+        logger.critical("TELEGRAM_BOT_TOKEN not set in .env")
         return
-    
-    print("=" * 50)
-    print("  NSE Stock Bot Starting...")
-    print("=" * 50)
-    
+
+    logger.info("=" * 50)
+    logger.info("  NSE Stock Bot Starting...")
+    logger.info("=" * 50)
+
     # Create application
     app = Application.builder().token(token).build()
-    
+
     # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("start",   start))
+    app.add_handler(CommandHandler("help",    help_command))
+    app.add_handler(CommandHandler("report",  report))
     app.add_handler(CommandHandler("summary", summary))
     app.add_handler(CommandHandler("gainers", gainers))
-    app.add_handler(CommandHandler("losers", losers))
-    app.add_handler(CommandHandler("active", active))
-    app.add_handler(CommandHandler("top", top))
-    app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(CommandHandler("losers",  losers))
+    app.add_handler(CommandHandler("active",  active))
+    app.add_handler(CommandHandler("top",     top))
+    app.add_handler(CommandHandler("buy",     buy))
     app.add_handler(CommandHandler("predict", predict))
     app.add_handler(CommandHandler("portfolio", portfolio))
-    app.add_handler(CommandHandler("stock", stock))
-    
+    app.add_handler(CommandHandler("stock",   stock))
+
     # Portfolio Handlers
-    app.add_handler(CommandHandler("track", track))
+    app.add_handler(CommandHandler("track",       track))
     app.add_handler(CommandHandler("myportfolio", myportfolio))
-    
+
     # Chart Handlers
-    app.add_handler(CommandHandler("chart", chart_command))
-    app.add_handler(CommandHandler("chat", chart_command))  # Alias for common typo
+    app.add_handler(CommandHandler("chart",    chart_command))
+    app.add_handler(CommandHandler("chat",     chart_command))   # common typo alias
     app.add_handler(CommandHandler("forecast", forecast_command))
-    app.add_handler(CommandHandler("pchart", portfolio_chart_command))
-    app.add_handler(CommandHandler("analyze", analyze_command))
-    
+    app.add_handler(CommandHandler("pchart",   portfolio_chart_command))
+    app.add_handler(CommandHandler("analyze",  analyze_command))
+
+    # AI Q&A (OpenClaw)
+    app.add_handler(CommandHandler("ask", ask_command))
+
     # Alert & Dividend Handlers
-    app.add_handler(CommandHandler("alert", alert_command))
+    app.add_handler(CommandHandler("alert",    alert_command))
     app.add_handler(CommandHandler("myalerts", myalerts_command))
     app.add_handler(CommandHandler("delalert", delalert_command))
     app.add_handler(CommandHandler("dividends", dividends_command))
-    
+
     # Message Handler for NLP
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
-    
-    # Start Job Queue
+
+    # --- Background Jobs ---
     if app.job_queue:
         app.job_queue.run_repeating(check_alerts_job, interval=60, first=10)
         app.job_queue.run_repeating(check_price_alerts_job, interval=120, first=30)
-        print("Jobs scheduled: Risk alerts (60s), Price alerts (120s)")
-    
-    print("Bot is running! Press Ctrl+C to stop.")
-    print("Open Telegram and message @NSE_whit_bot")
-    
-    # Start polling
+        # Pre-warm cache every 4 min so users never hit a cold fetch on expiry
+        async def prewarm_cache_job(_ctx):
+            await get_cached_stocks_async()
+        app.job_queue.run_repeating(prewarm_cache_job, interval=240, first=5)
+        logger.info("Jobs: risk-alerts(60s)  price-alerts(120s)  cache-prewarm(240s)")
+
+    # --- Graceful SIGTERM shutdown (Docker stop / k8s) ---
+    def _on_sigterm(*_):
+        logger.info("SIGTERM received — shutting down gracefully")
+        app.stop_running()
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+    logger.info("Bot is running!  Ctrl+C or SIGTERM to stop.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 
 if __name__ == "__main__":

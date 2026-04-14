@@ -156,14 +156,14 @@ class PortfolioManager:
     def check_alerts(self, user_id: str):
         """Check for risk alerts with throttling (Portfolio + Market)."""
         import time
-        
+
         alerts = []
         now = time.time()
-        
+
         # Initialize throttle cache for user
         if user_id not in self.last_alerts:
             self.last_alerts[user_id] = {}
-            
+
         # --- PORTFOLIO ALERTS ---
         port = self.get_portfolio(user_id)
         if port:
@@ -173,55 +173,51 @@ class PortfolioManager:
                 if now - last_time > 86400:
                     alerts.append(f"⚠️ **High Risk Alert:** Portfolio Risk Score is {port['risk_score']:.0f}/100. Consider rebalancing.")
                     self.last_alerts[user_id]['risk_high'] = now
-                
+
             # 2. Portfolio Stock Analysis (Throttle: 10 mins)
             for item in port['holdings']:
                 alert_key = f"port_{item['ticker']}"
                 last_time = self.last_alerts[user_id].get(alert_key, 0)
-                
-                # Check for significant moves (>= 2%) or Stop Loss (<-10%)
+
                 is_stop_loss = item['pnl_pct'] < -10
-                is_volatile = abs(item['pnl_pct']) >= 2.0
-                
+                is_volatile  = abs(item['pnl_pct']) >= 2.0
+
                 if (is_stop_loss or is_volatile) and (now - last_time > 600):
                     reason = "🚨 STOP-LOSS" if is_stop_loss else "🔔 PORTFOLIO MOVE"
                     alerts.append(f"{reason}: {item['ticker']} is at {item['pnl_pct']:.1f}% (Price: {item['current_price']})")
                     self.last_alerts[user_id][alert_key] = now
 
-        # --- MARKET ALERTS (All 67 Stocks) ---
-        # Fetch fresh data
+        # --- MARKET ALERTS ---
+        # analyze_all_stocks() is cheap when the bot-level TTL cache is warm
+        # (get_cached_stocks() returns in microseconds). We always call it once
+        # here rather than duplicating caching logic in portfolio_manager.
         stocks = self.analyzer.analyze_all_stocks()
         for s in stocks:
-            # Alert on significant moves (> 5%) or Smart Signals
-            move_alert = False
+            move_alert  = False
             smart_alert = False
             msg = ""
-            
-            # 1. Price Moves
+
+            # 1. Price Moves ≥5 %
             if s.change_pct and abs(s.change_pct) >= 5.0:
                 direction = "🚀 SURGING" if s.change_pct > 0 else "🔻 CRASHING"
                 msg = f"{direction}: **{s.ticker}** is moving! {s.change_pct:+.1f}% (Price: {s.price})"
                 move_alert = True
-                
-            # 2. Smart Signals (Best Time to Invest)
-            # Momentum < 20 implies Oversold (Potential Buy)
-            # Momentum > 80 implies Overbought (Potential Sell)
-            elif s.momentum_score < 20: 
-                msg = f"💎 **BARGAIN ALERT:** {s.ticker} is very cheap right now! Good time to buy? (Momentum: {s.momentum_score:.0f})"
+
+            # 2. Smart Signals — Oversold (<20) or Overbought (>80) momentum
+            elif s.momentum_score < 20:
+                msg = f"💎 **BARGAIN ALERT:** {s.ticker} is very cheap right now! (Momentum: {s.momentum_score:.0f})"
                 smart_alert = True
             elif s.momentum_score > 80:
-                msg = f"🔥 **HOT STOCK:** {s.ticker} prices have gone up fast. Consider taking profits? (Momentum: {s.momentum_score:.0f})"
+                msg = f"🔥 **HOT STOCK:** {s.ticker} prices have surged. Consider taking profits? (Momentum: {s.momentum_score:.0f})"
                 smart_alert = True
-                
+
             if move_alert or smart_alert:
                 alert_key = f"market_{s.ticker}_{'smart' if smart_alert else 'move'}"
-                last_time = self.last_alerts[user_id].get(alert_key, 0)
-                
-                # Throttle: Market moves (2h), Smart Signals (4h to avoid spam)
-                throttle = 14400 if smart_alert else 7200
-                
+                last_time  = self.last_alerts[user_id].get(alert_key, 0)
+                throttle   = 14400 if smart_alert else 7200
+
                 if now - last_time > throttle:
                     alerts.append(msg)
                     self.last_alerts[user_id][alert_key] = now
-                    
+
         return alerts

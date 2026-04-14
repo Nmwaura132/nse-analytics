@@ -59,8 +59,15 @@ class MLOptimizer:
 
         # Annualized Mean Returns and Covariance Matrix
         # Assuming 252 trading days
+        # Ledoit-Wolf shrinkage produces a numerically stable covariance estimate
+        # — critical for short history windows (30-90 days) where sample covariance
+        # is unreliable and can blow up the optimizer.
+        from sklearn.covariance import LedoitWolf
+        lw = LedoitWolf().fit(returns.values)
+        cov_matrix = pd.DataFrame(
+            lw.covariance_, index=returns.columns, columns=returns.columns
+        ) * 252
         mean_returns = returns.mean() * 252
-        cov_matrix = returns.cov() * 252
         
         num_assets = len(tickers)
         
