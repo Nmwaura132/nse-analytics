@@ -8,8 +8,8 @@ services:
       TZ: ${OPENCLAW_TZ:-Africa/Nairobi}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     volumes:
-      - ${OPENCLAW_CONFIG_DIR:-./openclaw-data}:/home/node/.openclaw
-      - ${OPENCLAW_WORKSPACE_DIR:-./openclaw-workspace}:/home/node/.openclaw/workspace
+      - /opt/nse-pro/openclaw-data:/home/node/.openclaw
+      - /opt/nse-pro/openclaw-workspace:/home/node/.openclaw/workspace
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
       - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
@@ -48,7 +48,7 @@ services:
     ports:
       - "5001:5001"
     volumes:
-      - ./portfolio.db:/app/portfolio.db
+      - /opt/nse-pro/portfolio.db:/app/portfolio.db
     restart: unless-stopped
     command: ["python", "dashboard_server.py"]
     healthcheck:
@@ -66,8 +66,8 @@ services:
     environment:
       OPENCLAW_API_URL: http://openclaw-gateway:18789
     volumes:
-      - ./portfolio.db:/app/portfolio.db
-      - ./bot.log:/app/bot.log
+      - /opt/nse-pro/portfolio.db:/app/portfolio.db
+      - /opt/nse-pro/bot.log:/app/bot.log
     restart: unless-stopped
     command: ["python", "nse_bot.py"]
     depends_on:
