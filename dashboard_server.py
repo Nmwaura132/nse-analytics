@@ -4,6 +4,7 @@ Real-time market dashboard powered by RapidAPI NSE data.
 """
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
+import os
 import time
 from dataclasses import asdict
 from datetime import datetime
