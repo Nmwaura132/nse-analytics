@@ -122,6 +122,11 @@ def get_cached_data():
     return market_cache
 
 
+@app.route('/health')
+def health():
+    return jsonify({'status': 'ok'})
+
+
 @app.route('/')
 def index():
     return render_template('dashboard.html')
