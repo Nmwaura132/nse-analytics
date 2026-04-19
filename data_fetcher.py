@@ -1,3 +1,4 @@
+import re
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -7,12 +8,53 @@ import traceback
 
 class NSEDataFetcher:
     BASE_URL = "https://afx.kwayisi.org/nse/"
+    HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120"}
 
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        })
+        self.session.headers.update(self.HEADERS)
+
+    def get_all_stocks(self):
+        """Scrape all NSE stocks with live prices from afx.kwayisi.org."""
+        try:
+            r = self.session.get(self.BASE_URL, timeout=20)
+            r.raise_for_status()
+            pattern = r'>([A-Z][A-Z0-9-]{1,7})</a><td>(?:<a[^>]+>[^<]+</a><td>)?([\d,]*)<td>([\d,\.]+)<td[^>]*>([+-][\d\.]+)<tr'
+            stocks = []
+            seen = set()
+            for ticker, vol_str, price_str, change_str in re.findall(pattern, r.text):
+                if ticker in seen:
+                    continue
+                seen.add(ticker)
+                try:
+                    price = float(price_str.replace(',', ''))
+                    change = float(change_str)
+                    prev = price - change
+                    chg_pct = round((change / prev) * 100, 2) if prev else 0.0
+                    stocks.append({
+                        'ticker': ticker,
+                        'name': ticker,
+                        'price': price,
+                        'volume': float(vol_str.replace(',', '')) if vol_str else 0,
+                        'change': change,
+                        'change_pct': chg_pct,
+                        'timestamp': datetime.datetime.now().isoformat(),
+                    })
+                except Exception:
+                    pass
+            return stocks
+        except Exception as e:
+            print(f"AFX fetch error: {e}")
+            return []
+
+    def get_stock(self, ticker):
+        """Fetch a single stock by ticker."""
+        stocks = self.get_all_stocks()
+        ticker = ticker.upper().strip()
+        for s in stocks:
+            if s['ticker'] == ticker:
+                return s
+        return None
 
     def get_nse_companies(self):
         """

@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from rapidapi_fetcher import RapidAPIFetcher
 from tradingview_fetcher import TradingViewFetcher
 from data_fetcher import NSEDataFetcher
 
@@ -63,13 +62,12 @@ class ComprehensiveAnalyzer:
     WEIGHT_VALUE = 0.40
     
     def __init__(self):
-        self.rapidapi = RapidAPIFetcher()
-        self.tradingview = TradingViewFetcher()
         self.afx_fetcher = NSEDataFetcher()
+        self.tradingview = TradingViewFetcher()
     
     def fetch_all_data(self) -> List[dict]:
-        """Fetch real-time data. RapidAPI (NSE-accurate) first, TradingView as fallback."""
-        stocks = self.rapidapi.get_all_stocks()
+        """Fetch real-time data. AFX (NSE-accurate, free) first, TradingView as fallback."""
+        stocks = self.afx_fetcher.get_all_stocks()
         if stocks:
             return stocks
         return self.tradingview.get_all_stocks()
