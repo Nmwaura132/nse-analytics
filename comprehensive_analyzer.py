@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from tradingview_fetcher import TradingViewFetcher
+from rapidapi_fetcher import RapidAPIFetcher
 from data_fetcher import NSEDataFetcher
 
 
@@ -62,7 +62,7 @@ class ComprehensiveAnalyzer:
     WEIGHT_VALUE = 0.40
     
     def __init__(self):
-        self.market_data = TradingViewFetcher()
+        self.market_data = RapidAPIFetcher()
         self.afx_fetcher = NSEDataFetcher()
     
     def fetch_all_data(self) -> List[dict]:

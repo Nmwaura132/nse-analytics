@@ -12,7 +12,6 @@ from datetime import datetime
 from comprehensive_analyzer import ComprehensiveAnalyzer, StockScore
 from advanced_algorithms import enhance_stocks, AdvancedPortfolioAlgorithms
 from data_fetcher import NSEDataFetcher
-from tradingview_fetcher import TradingViewFetcher
 import financials
 from ml_predictor import MLPredictor
 from ml_optimizer import MLOptimizer
@@ -82,8 +81,8 @@ def sanitize_json(obj):
 
 
 def refresh_market_data():
-    """Fetches and caches market data from TradingView."""
-    print("Refreshing market data from TradingView...")
+    """Fetches and caches market data from NSE via RapidAPI."""
+    print("Refreshing market data from NSE...")
     
     stocks = analyzer.analyze_all_stocks()
     
@@ -564,7 +563,7 @@ if __name__ == '__main__':
     debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
     print("=" * 50)
     print("  NSE Dashboard Server")
-    print("  Powered by TradingView Real-Time Data")
+    print("  Powered by NSE Real-Time Data")
     print("=" * 50)
     print(f"\nOpen http://0.0.0.0:{port} in your browser.")
     app.run(host='0.0.0.0', debug=debug, port=port)
