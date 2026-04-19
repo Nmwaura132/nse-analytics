@@ -1,0 +1,74 @@
+services:
+  openclaw-gateway:
+    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      TZ: ${OPENCLAW_TZ:-Africa/Nairobi}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR:-./openclaw-data}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-./openclaw-workspace}:/home/node/.openclaw/workspace
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+      - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+    init: true
+    restart: unless-stopped
+    command:
+      [
+        "node",
+        "dist/index.js",
+        "gateway",
+        "--bind",
+        "lan",
+        "--port",
+        "18789",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  nse-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.nse
+    env_file: .env
+    environment:
+      OPENCLAW_API_URL: http://openclaw-gateway:18789
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./portfolio.db:/app/portfolio.db
+    restart: unless-stopped
+    command: ["python", "dashboard_server.py"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  nse-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.nse
+    env_file: .env
+    environment:
+      OPENCLAW_API_URL: http://openclaw-gateway:18789
+    volumes:
+      - ./portfolio.db:/app/portfolio.db
+      - ./bot.log:/app/bot.log
+    restart: unless-stopped
+    command: ["python", "nse_bot.py"]
+    depends_on:
+      - nse-dashboard
