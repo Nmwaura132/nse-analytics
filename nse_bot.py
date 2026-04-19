@@ -18,6 +18,8 @@ from ml_predictor import MLPredictor
 from chart_generator import generate_candlestick_chart, generate_forecast_chart, generate_portfolio_chart, generate_analysis_chart
 from dividend_calendar import get_upcoming_dividends, get_user_dividend_income
 from database import PriceAlert, SessionLocal as AlertSessionLocal
+from data_collector import start_scheduler
+import openclaw_client as ai
 
 # Setup logging
 logging.basicConfig(
@@ -805,14 +807,57 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             reasons.append(f"🐢 **Slowing Down:** The upward momentum is fading.")
             
-        caption = f"🧠 **Simple Analysis for {ticker}**\n\n" + "\n".join(reasons)
+        caption = f"🧠 **Analysis for {ticker}**\n\n" + "\n".join(reasons)
         caption += f"\n\n_Current Price: {price:.2f} KES_"
-        
+
+        # Append AI narrative if OpenClaw is reachable
+        if ai.is_available():
+            try:
+                stocks = get_cached_stocks()
+                stock = next((s for s in stocks if s['ticker'] == ticker), None)
+                narrative = ai.ai_analyze(
+                    ticker=ticker, price=price,
+                    change_pct=stock.get('change_pct', 0) if stock else 0,
+                    rsi=float(rsi), macd=float(macd),
+                    pe=stock.get('pe_ratio') if stock else None,
+                    div_yield=stock.get('dividend_yield') if stock else None,
+                    volume=stock.get('volume') if stock else None,
+                )
+                caption += f"\n\n🤖 *AI Insight:*\n{narrative}"
+            except Exception as ai_err:
+                logger.warning(f"AI analyze failed: {ai_err}")
+
         await update.message.reply_photo(photo=img_buf, caption=caption, parse_mode='Markdown')
-        
+
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         await update.message.reply_text(f"❌ Failed to analyze: {str(e)[:100]}")
+
+
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /ask <question> - AI-powered freeform NSE question."""
+    if not context.args:
+        await update.message.reply_text("Usage: /ask why is KPC up today?\n/ask which bank stock has the best dividend yield?")
+        return
+
+    question = " ".join(context.args)
+    await update.message.reply_text("🤖 Thinking...")
+
+    try:
+        if not ai.is_available():
+            await update.message.reply_text("❌ AI service unavailable right now. Try /analyze TICKER for rule-based analysis.")
+            return
+
+        stocks = get_cached_stocks()
+        context_lines = [f"{s['ticker']} KES {s['price']} ({s.get('change_pct', 0):+.1f}%)"
+                         for s in (stocks or [])[:20]]
+        market_ctx = "Current NSE prices:\n" + "\n".join(context_lines)
+
+        answer = ai.ai_ask(question, market_context=market_ctx)
+        await update.message.reply_text(f"🤖 {answer}")
+    except Exception as e:
+        logger.error(f"ask_command error: {e}")
+        await update.message.reply_text("❌ AI query failed. Please try again.")
 
 
 async def portfolio_chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1152,6 +1197,7 @@ def main():
     app.add_handler(CommandHandler("forecast", forecast_command))
     app.add_handler(CommandHandler("pchart", portfolio_chart_command))
     app.add_handler(CommandHandler("analyze", analyze_command))
+    app.add_handler(CommandHandler("ask", ask_command))
     
     # Alert & Dividend Handlers
     app.add_handler(CommandHandler("alert", alert_command))
@@ -1170,9 +1216,12 @@ def main():
         app.job_queue.run_repeating(check_price_alerts_job, interval=120, first=30)
         print("Jobs scheduled: Risk alerts (60s), Price alerts (120s)")
     
+    # Start daily price collector
+    start_scheduler()
+
     print("Bot is running! Press Ctrl+C to stop.")
     print("Open Telegram and message @NSE_whit_bot")
-    
+
     # Start polling
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
