@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from rapidapi_fetcher import RapidAPIFetcher
+from tradingview_fetcher import TradingViewFetcher
 from data_fetcher import NSEDataFetcher
 
 
@@ -62,12 +63,16 @@ class ComprehensiveAnalyzer:
     WEIGHT_VALUE = 0.40
     
     def __init__(self):
-        self.market_data = RapidAPIFetcher()
+        self.rapidapi = RapidAPIFetcher()
+        self.tradingview = TradingViewFetcher()
         self.afx_fetcher = NSEDataFetcher()
     
     def fetch_all_data(self) -> List[dict]:
-        """Fetch real-time data for all stocks."""
-        return self.market_data.get_all_stocks()
+        """Fetch real-time data. RapidAPI (NSE-accurate) first, TradingView as fallback."""
+        stocks = self.rapidapi.get_all_stocks()
+        if stocks:
+            return stocks
+        return self.tradingview.get_all_stocks()
     
     def calculate_momentum_score(self, change: float, all_changes: List[float]) -> float:
         """

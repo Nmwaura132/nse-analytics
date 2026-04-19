@@ -12,6 +12,7 @@ from datetime import datetime
 from comprehensive_analyzer import ComprehensiveAnalyzer, StockScore
 from advanced_algorithms import enhance_stocks, AdvancedPortfolioAlgorithms
 from data_fetcher import NSEDataFetcher
+from tradingview_fetcher import TradingViewFetcher
 import financials
 from ml_predictor import MLPredictor
 from ml_optimizer import MLOptimizer

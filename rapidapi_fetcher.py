@@ -68,7 +68,7 @@ class RapidAPIFetcher:
             response = requests.get(
                 f"{self.BASE_URL}/stocks",
                 headers=self.headers,
-                timeout=30
+                timeout=60
             )
             response.raise_for_status()
             data = response.json()
@@ -102,9 +102,10 @@ class RapidAPIFetcher:
         """
         try:
             response = requests.get(
-                f"{self.BASE_URL}/stocks/{ticker_or_name}",
+                f"{self.BASE_URL}/stocks",
                 headers=self.headers,
-                timeout=30
+                params={"search": ticker_or_name},
+                timeout=60
             )
             response.raise_for_status()
             data = response.json()
