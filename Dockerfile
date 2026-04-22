@@ -15,9 +15,9 @@ RUN apt-get update \
 # Install Python deps via Poetry (no dev extras in image)
 COPY pyproject.toml poetry.lock /app/
 RUN pip install --upgrade pip \
-    && pip install "poetry>=1.8,<2" \
+    && pip install poetry \
     && poetry config virtualenvs.create false \
-    && poetry install --no-interaction --no-ansi --no-root --without dev \
+    && poetry install --no-interaction --no-ansi --no-root \
     && pip install yfinance
 
 # Copy application source
