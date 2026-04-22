@@ -288,23 +288,36 @@ class LoginView(APIView):
 
 
 class TelegramLoginView(APIView):
-    """Passwordless login for Telegram users by telegram_id."""
+    """Passwordless login for Telegram users by telegram_id. Auto-creates account on first use."""
     permission_classes = [AllowAny]
 
     def post(self, request):
         telegram_id = str(request.data.get('telegram_id', ''))
+        first_name = str(request.data.get('first_name', ''))
         if not telegram_id:
             return Response({'error': 'telegram_id required'}, status=400)
         try:
-            from api.models import UserProfile
             profile = UserProfile.objects.select_related('user').get(telegram_id=telegram_id)
         except UserProfile.DoesNotExist:
-            return Response({'error': 'Telegram account not linked. Register at the web app first.'}, status=404)
+            # Auto-create a User + UserProfile for this Telegram user on first login
+            username = f"tg_{telegram_id}"
+            user, _ = User.objects.get_or_create(
+                username=username,
+                defaults={'first_name': first_name, 'is_active': True},
+            )
+            profile, _ = UserProfile.objects.get_or_create(
+                user=user,
+                defaults={'telegram_id': telegram_id, 'tier': 'free'},
+            )
+            if not profile.telegram_id:
+                profile.telegram_id = telegram_id
+                profile.save()
         refresh = RefreshToken.for_user(profile.user)
         return Response({
             'access': str(refresh.access_token),
             'tier': profile.tier,
             'is_pro': profile.is_pro,
+            'created': not profile.pk,
         })
 
 

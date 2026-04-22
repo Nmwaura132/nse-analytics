@@ -1208,6 +1208,44 @@ async def dividends_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:8000/api')
 
+
+async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/link email password — Link your web account to Telegram."""
+    args = context.args or []
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Link an existing web account to this Telegram:\n"
+            "`/link your@email.com yourpassword`\n\n"
+            "Or just use `/subscribe` — your Telegram account is auto-registered.",
+            parse_mode='Markdown'
+        )
+        return
+    email, password = args[0], args[1]
+    telegram_id = str(update.effective_user.id)
+    try:
+        import requests as req
+        r = req.post(f"{BACKEND_URL}/auth/token", json={"email": email, "password": password}, timeout=10)
+        if r.status_code != 200:
+            await update.message.reply_text("❌ Login failed. Check your email and password.")
+            return
+        token = r.json().get('access')
+        r2 = req.post(
+            f"{BACKEND_URL}/auth/telegram-link",
+            json={"telegram_id": telegram_id},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        if r2.status_code == 200:
+            await update.message.reply_text(
+                "✅ *Account linked!*\nYour Telegram is now connected to your web account.",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(f"❌ Linking failed: {r2.json().get('error', 'Unknown error')}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
 async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/subscribe [pro|club] [phone] — Initiate M-Pesa subscription."""
     args = context.args or []
@@ -1238,21 +1276,18 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Get JWT token for this Telegram user (try linking via telegram_id)
+    # Get JWT token for this Telegram user (auto-creates account if needed)
     telegram_id = str(update.effective_user.id)
+    first_name = update.effective_user.first_name or ''
     try:
         import requests as req
-        # Try to get an auth token using telegram_id linkage endpoint
         r = req.post(
             f"{BACKEND_URL}/auth/telegram-login",
-            json={"telegram_id": telegram_id},
+            json={"telegram_id": telegram_id, "first_name": first_name},
             timeout=10,
         )
-        if r.status_code != 200:
-            await update.message.reply_text(
-                "⚠️ Link your account first:\n`/link your@email.com`\n\nOr register at the web app.",
-                parse_mode='Markdown'
-            )
+        if r.status_code not in (200, 201):
+            await update.message.reply_text(f"❌ Auth error: {r.json().get('error', 'Try again later')}")
             return
         token = r.json().get('access')
 
@@ -1279,14 +1314,15 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/plan — Show current subscription tier and expiry."""
     telegram_id = str(update.effective_user.id)
+    first_name = update.effective_user.first_name or ''
     try:
         import requests as req
         r = req.post(
             f"{BACKEND_URL}/auth/telegram-login",
-            json={"telegram_id": telegram_id},
+            json={"telegram_id": telegram_id, "first_name": first_name},
             timeout=10,
         )
-        if r.status_code != 200:
+        if r.status_code not in (200, 201):
             await update.message.reply_text(
                 "You are on the *Free* plan.\nUse `/subscribe pro` to upgrade.",
                 parse_mode='Markdown'
@@ -1439,6 +1475,7 @@ def main():
     app.add_handler(CommandHandler("subscribe", subscribe_command))
     app.add_handler(CommandHandler("upgrade",   subscribe_command))
     app.add_handler(CommandHandler("plan",      plan_command))
+    app.add_handler(CommandHandler("link",      link_command))
 
     # Alert & Dividend Handlers
     app.add_handler(CommandHandler("alert",    alert_command))
@@ -1479,6 +1516,7 @@ def main():
             ("plan",        "Your current plan & expiry"),
             ("subscribe",   "Upgrade to Pro or Club"),
             ("upgrade",     "Upgrade your plan"),
+            ("link",        "Link existing web account to Telegram"),
         ])
     app.post_init = set_commands
 
