@@ -88,9 +88,11 @@ WSGI_APPLICATION = "config.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
+_default_engine = "django.db.backends.mysql" if os.environ.get("DB_HOST") else "django.db.backends.sqlite3"
+
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.mysql" if os.environ.get("DB_HOST") else "django.db.backends.sqlite3",
+        "ENGINE": os.environ.get("DB_ENGINE", _default_engine),
         "NAME": os.environ.get("DB_NAME", BASE_DIR / "db.sqlite3"),
         "USER": os.environ.get("DB_USER", ""),
         "PASSWORD": os.environ.get("DB_PASSWORD", ""),
@@ -139,8 +141,9 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 # HTTPS security — only enforce when deployed behind SSL
-if not DEBUG:
-    SECURE_HSTS_SECONDS = 31536000          # 1 year
+_force_https = os.environ.get('FORCE_HTTPS', 'false').lower() == 'true'
+if not DEBUG and _force_https:
+    SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     SECURE_SSL_REDIRECT = True

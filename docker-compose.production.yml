@@ -1,0 +1,132 @@
+services:
+  postgres:
+    image: 'postgres:16-alpine'
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: '${POSTGRES_DB:-nse_db}'
+      POSTGRES_USER: '${POSTGRES_USER:-nse_user}'
+      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}'
+    volumes:
+      - '/opt/nse-pro/postgres-data:/var/lib/postgresql/data'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-nse_user} -d ${POSTGRES_DB:-nse_db}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  openclaw-gateway:
+    image: '${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}'
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      OPENCLAW_GATEWAY_TOKEN: '${OPENCLAW_GATEWAY_TOKEN:-}'
+      TZ: '${OPENCLAW_TZ:-Africa/Nairobi}'
+      DEEPSEEK_API_KEY: '${DEEPSEEK_API_KEY:-}'
+    volumes:
+      - '/opt/nse-pro/openclaw-data:/home/node/.openclaw'
+      - '/opt/nse-pro/openclaw-workspace:/home/node/.openclaw/workspace'
+    ports:
+      - '${OPENCLAW_GATEWAY_PORT:-18789}:18789'
+      - '${OPENCLAW_BRIDGE_PORT:-18790}:18790'
+    init: true
+    restart: unless-stopped
+    command:
+      - node
+      - dist/index.js
+      - gateway
+      - '--bind'
+      - lan
+      - '--port'
+      - '18789'
+      - '--allow-unconfigured'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  nse-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      OPENCLAW_API_URL: 'http://openclaw-gateway:18789'
+      DATABASE_URL: 'postgresql://${POSTGRES_USER:-nse_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nse_db}'
+    ports:
+      - '5001:5001'
+    volumes:
+      - '/opt/nse-pro/ml-models:/app/models'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    command:
+      - python
+      - dashboard_server.py
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:5001/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  nse-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      DB_ENGINE: django.db.backends.postgresql
+      DB_HOST: postgres
+      DB_PORT: '5432'
+      DB_NAME: '${POSTGRES_DB:-nse_db}'
+      DB_USER: '${POSTGRES_USER:-nse_user}'
+      DB_PASSWORD: '${POSTGRES_PASSWORD}'
+      PYTHONPATH: /app
+      ALLOWED_HOSTS: '${ALLOWED_HOSTS:-localhost,127.0.0.1}'
+    ports:
+      - '8001:8000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - |
+        python nse_backend/manage.py migrate --noinput &&
+        python nse_backend/manage.py collectstatic --noinput &&
+        gunicorn nse_backend.config.wsgi:application -w 2 -b 0.0.0.0:8000
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/api/stocks']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  nse-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      OPENCLAW_API_URL: 'http://openclaw-gateway:18789'
+      DATABASE_URL: 'postgresql://${POSTGRES_USER:-nse_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nse_db}'
+      BACKEND_URL: 'http://nse-api:8000/api'
+    volumes:
+      - '/opt/nse-pro/bot.log:/app/bot.log'
+      - '/opt/nse-pro/ml-models:/app/models'
+    restart: unless-stopped
+    command:
+      - python
+      - nse_bot.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nse-dashboard:
+        condition: service_started
+      nse-api:
+        condition: service_started
