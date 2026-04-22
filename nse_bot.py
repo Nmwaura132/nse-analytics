@@ -1450,6 +1450,38 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
+    # --- Register command menu (shown when user types "/") ---
+    async def set_commands(application):
+        await application.bot.set_my_commands([
+            # Free
+            ("start",       "Welcome & overview"),
+            ("help",        "Full command list"),
+            ("market",      "Live NSE market summary"),
+            ("gainers",     "Top gainers today"),
+            ("losers",      "Top losers today"),
+            ("stock",       "Stock detail — /stock SCOM"),
+            ("report",      "Full market report"),
+            # Portfolio
+            ("myportfolio", "Your holdings & P&L"),
+            ("track",       "Add a trade — /track SCOM 10 32"),
+            ("dividends",   "Upcoming dividends"),
+            # Pro
+            ("predict",     "⭐ Price forecast — /predict SCOM"),
+            ("analyze",     "⭐ Deep analysis — /analyze SCOM"),
+            ("chart",       "⭐ Price chart — /chart SCOM"),
+            ("forecast",    "⭐ ML forecast chart"),
+            ("pchart",      "⭐ Portfolio chart"),
+            ("ask",         "⭐ Ask AI about any stock"),
+            ("alert",       "⭐ Price alert — /alert SCOM > 35"),
+            ("myalerts",    "⭐ View active alerts"),
+            ("delalert",    "⭐ Delete alert — /delalert 1"),
+            # Subscription
+            ("plan",        "Your current plan & expiry"),
+            ("subscribe",   "Upgrade to Pro or Club"),
+            ("upgrade",     "Upgrade your plan"),
+        ])
+    app.post_init = set_commands
+
     # --- Background Jobs ---
     if app.job_queue:
         app.job_queue.run_repeating(check_alerts_job, interval=60, first=10)
