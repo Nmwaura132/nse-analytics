@@ -3,10 +3,12 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from datetime import datetime, timezone
 import os
 
-# Create database engine
-# Use SQLite for simplicity, but can swap for Postgres
-DB_URL = "sqlite:///portfolio.db"
-engine = create_engine(DB_URL, echo=False)
+# Use DATABASE_URL env var (PostgreSQL on VPS), fallback to SQLite locally
+_db_url = os.environ.get("DATABASE_URL", "sqlite:///portfolio.db")
+# SQLAlchemy requires postgresql+psycopg2:// scheme
+if _db_url.startswith("postgresql://"):
+    _db_url = _db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+engine = create_engine(_db_url, echo=False, pool_pre_ping=True)
 
 
 class Base(DeclarativeBase):
