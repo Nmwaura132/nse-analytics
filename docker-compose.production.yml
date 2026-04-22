@@ -85,8 +85,8 @@ services:
       DB_NAME: '${POSTGRES_DB:-nse_db}'
       DB_USER: '${POSTGRES_USER:-nse_user}'
       DB_PASSWORD: '${POSTGRES_PASSWORD}'
-      PYTHONPATH: /app
-      ALLOWED_HOSTS: '${ALLOWED_HOSTS:-localhost,127.0.0.1}'
+      PYTHONPATH: /app/nse_backend
+      ALLOWED_HOSTS: '${ALLOWED_HOSTS:-localhost,127.0.0.1,37.221.93.219}'
     ports:
       - '8001:8000'
     depends_on:
@@ -97,9 +97,10 @@ services:
       - sh
       - -c
       - |
-        python nse_backend/manage.py migrate --noinput &&
-        python nse_backend/manage.py collectstatic --noinput &&
-        gunicorn nse_backend.config.wsgi:application -w 2 -b 0.0.0.0:8000
+        cd /app/nse_backend &&
+        python manage.py migrate --noinput &&
+        python manage.py collectstatic --noinput &&
+        gunicorn config.wsgi:application -w 2 -b 0.0.0.0:8000
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:8000/api/stocks']
       interval: 30s
