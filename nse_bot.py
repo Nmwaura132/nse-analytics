@@ -1204,6 +1204,113 @@ async def dividends_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
 
+# ============ SUBSCRIPTION / PLAN ============
+
+BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:8000/api')
+
+async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/subscribe [pro|club] [phone] — Initiate M-Pesa subscription."""
+    args = context.args or []
+    tier = args[0].lower() if args else None
+    phone = args[1] if len(args) > 1 else None
+
+    if not tier or tier not in ('pro', 'club'):
+        prices = {'pro': 'KES 500/month', 'club': 'KES 3,000/month'}
+        msg = (
+            "⭐ *NSE Pro Subscription*\n\n"
+            f"🔹 *Pro* — {prices['pro']}\n"
+            "  • ML predictions, backtesting, AI analysis\n"
+            "  • Portfolio optimizer, charts, alerts\n\n"
+            f"🔸 *Club* — {prices['club']}\n"
+            "  • Everything in Pro\n"
+            "  • API access + 5 users (investment clubs)\n\n"
+            "Usage:\n"
+            "`/subscribe pro 0712345678`\n"
+            "`/subscribe club 0712345678`"
+        )
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        return
+
+    if not phone:
+        await update.message.reply_text(
+            f"Please provide your M-Pesa phone number:\n`/subscribe {tier} 0712345678`",
+            parse_mode='Markdown'
+        )
+        return
+
+    # Get JWT token for this Telegram user (try linking via telegram_id)
+    telegram_id = str(update.effective_user.id)
+    try:
+        import requests as req
+        # Try to get an auth token using telegram_id linkage endpoint
+        r = req.post(
+            f"{BACKEND_URL}/auth/telegram-login",
+            json={"telegram_id": telegram_id},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            await update.message.reply_text(
+                "⚠️ Link your account first:\n`/link your@email.com`\n\nOr register at the web app.",
+                parse_mode='Markdown'
+            )
+            return
+        token = r.json().get('access')
+
+        r2 = req.post(
+            f"{BACKEND_URL}/subscribe/initiate",
+            json={"tier": tier, "phone": phone},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        data = r2.json()
+        if r2.status_code == 200:
+            await update.message.reply_text(
+                f"✅ *M-Pesa prompt sent!*\n\n"
+                f"Check your phone `{phone}` and enter your PIN to complete payment.\n"
+                f"Your *{tier.capitalize()}* plan activates instantly after payment.",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(f"❌ Error: {data.get('error', 'Payment failed')}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not process payment: {e}")
+
+
+async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/plan — Show current subscription tier and expiry."""
+    telegram_id = str(update.effective_user.id)
+    try:
+        import requests as req
+        r = req.post(
+            f"{BACKEND_URL}/auth/telegram-login",
+            json={"telegram_id": telegram_id},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            await update.message.reply_text(
+                "You are on the *Free* plan.\nUse `/subscribe pro` to upgrade.",
+                parse_mode='Markdown'
+            )
+            return
+        token = r.json().get('access')
+        r2 = req.get(
+            f"{BACKEND_URL}/plan",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        data = r2.json()
+        tier = data.get('tier', 'free').capitalize()
+        end = data.get('subscription_end')
+        end_str = f"\nExpires: `{end[:10]}`" if end else ""
+        icon = "⭐" if tier != "Free" else "🔓"
+        await update.message.reply_text(
+            f"{icon} *Your Plan: {tier}*{end_str}\n\nUse `/subscribe pro` to upgrade.",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not fetch plan: {e}")
+
+
 # ============ OPENCLAW AI Q&A ============
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1327,6 +1434,11 @@ def main():
 
     # AI Q&A (OpenClaw)
     app.add_handler(CommandHandler("ask", ask_command))
+
+    # Subscription
+    app.add_handler(CommandHandler("subscribe", subscribe_command))
+    app.add_handler(CommandHandler("upgrade",   subscribe_command))
+    app.add_handler(CommandHandler("plan",      plan_command))
 
     # Alert & Dividend Handlers
     app.add_handler(CommandHandler("alert",    alert_command))

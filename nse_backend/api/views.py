@@ -1,8 +1,13 @@
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
+from django.utils import timezone
 from django.shortcuts import get_object_or_404
 import sys
 import os
@@ -10,9 +15,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 import financials
 from ml_optimizer import MLOptimizer
 
-from .models import Trade
+from .models import Trade, UserProfile, Subscription
 from .serializers import TradeSerializer, MarketSummarySerializer, NotificationSerializer
 from .services import MarketService
+from .mpesa import stk_push, TIER_PRICES
+from .permissions import IsPro
 
 # Notifications Queue (Simple in-memory queue)
 notifications_queue = []
@@ -222,13 +229,182 @@ class HistoryView(APIView):
         cache = MarketService.get_data()
         current_price = next((s.price for s in cache['stocks'] if s.ticker.upper() == ticker.upper()), 100.0)
         df = MarketService.get_predictor().get_data(ticker, current_price)
-        
+
         if df is None or df.empty:
             return Response({'error': 'No historical data found'}, status=404)
-        
+
         df = df.copy()
         if 'Date' in df.columns:
             df['Date'] = df['Date'].astype(str)
-            
+
         records = df.to_dict('records')
         return Response(MarketService.sanitize_json(records))
+
+
+# ── Auth Endpoints ──────────────────────────────────────────────────────────
+
+class RegisterView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email', '').strip().lower()
+        password = request.data.get('password', '')
+        telegram_id = request.data.get('telegram_id')
+
+        if not email or not password:
+            return Response({'error': 'Email and password required'}, status=400)
+        if User.objects.filter(username=email).exists():
+            return Response({'error': 'Account already exists'}, status=400)
+
+        user = User.objects.create_user(username=email, email=email, password=password)
+        profile = UserProfile.objects.create(user=user, telegram_id=telegram_id)
+
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'tier': profile.tier,
+        }, status=201)
+
+
+class LoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email', '').strip().lower()
+        password = request.data.get('password', '')
+        user = authenticate(request, username=email, password=password)
+        if not user:
+            return Response({'error': 'Invalid credentials'}, status=401)
+
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'tier': profile.tier,
+            'subscription_end': profile.subscription_end,
+        })
+
+
+class TelegramLoginView(APIView):
+    """Passwordless login for Telegram users by telegram_id."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        telegram_id = str(request.data.get('telegram_id', ''))
+        if not telegram_id:
+            return Response({'error': 'telegram_id required'}, status=400)
+        try:
+            from api.models import UserProfile
+            profile = UserProfile.objects.select_related('user').get(telegram_id=telegram_id)
+        except UserProfile.DoesNotExist:
+            return Response({'error': 'Telegram account not linked. Register at the web app first.'}, status=404)
+        refresh = RefreshToken.for_user(profile.user)
+        return Response({
+            'access': str(refresh.access_token),
+            'tier': profile.tier,
+            'is_pro': profile.is_pro,
+        })
+
+
+class TelegramLinkView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        telegram_id = request.data.get('telegram_id')
+        if not telegram_id:
+            return Response({'error': 'telegram_id required'}, status=400)
+        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        profile.telegram_id = str(telegram_id)
+        profile.save()
+        return Response({'status': 'linked', 'telegram_id': telegram_id})
+
+
+class PlanView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        return Response({
+            'tier': profile.tier,
+            'is_pro': profile.is_pro,
+            'subscription_end': profile.subscription_end,
+            'prices': TIER_PRICES,
+        })
+
+
+# ── Subscription / M-Pesa Endpoints ────────────────────────────────────────
+
+class SubscribeInitiateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        tier = request.data.get('tier', 'pro').lower()
+        phone = request.data.get('phone', '')
+
+        if tier not in TIER_PRICES:
+            return Response({'error': f'Invalid tier. Choose: {list(TIER_PRICES)}'}, status=400)
+        if not phone:
+            profile, _ = UserProfile.objects.get_or_create(user=request.user)
+            phone = profile.mpesa_phone or ''
+        if not phone:
+            return Response({'error': 'M-Pesa phone number required'}, status=400)
+
+        try:
+            result = stk_push(phone, tier, request.user.id)
+        except Exception as e:
+            return Response({'error': f'STK Push failed: {e}'}, status=502)
+
+        if result.get('ResponseCode') != '0':
+            return Response({'error': result.get('ResponseDescription', 'STK Push failed')}, status=400)
+
+        Subscription.objects.create(
+            user=request.user,
+            tier=tier,
+            amount=TIER_PRICES[tier],
+            mpesa_phone=phone,
+            checkout_request_id=result.get('CheckoutRequestID'),
+            merchant_request_id=result.get('MerchantRequestID'),
+        )
+
+        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        if not profile.mpesa_phone:
+            profile.mpesa_phone = phone
+            profile.save()
+
+        return Response({
+            'status': 'stk_sent',
+            'message': f'Check your phone ({phone}) for the M-Pesa prompt.',
+            'checkout_request_id': result.get('CheckoutRequestID'),
+        })
+
+
+class SubscribeCallbackView(APIView):
+    """Daraja webhook — Safaricom calls this after payment completes."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        body = request.data.get('Body', {})
+        callback = body.get('stkCallback', {})
+        checkout_id = callback.get('CheckoutRequestID')
+        result_code = callback.get('ResultCode')
+
+        sub = Subscription.objects.filter(checkout_request_id=checkout_id).first()
+        if not sub:
+            return Response({'ResultCode': 0, 'ResultDesc': 'Unknown'})
+
+        if result_code == 0:
+            sub.status = Subscription.STATUS_ACTIVE
+            sub.activated_at = timezone.now()
+            sub.save()
+
+            profile, _ = UserProfile.objects.get_or_create(user=sub.user)
+            profile.tier = sub.tier
+            profile.subscription_end = timezone.now() + timedelta(days=30)
+            profile.save()
+        else:
+            sub.status = Subscription.STATUS_FAILED
+            sub.save()
+
+        return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
