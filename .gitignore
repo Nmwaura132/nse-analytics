@@ -31,6 +31,7 @@ debug_*.py
 check_*.py
 test_*.py
 _*.py
+!**/__init__.py
 evaluate_*.py
 fetch_*.py
 run_*.py
