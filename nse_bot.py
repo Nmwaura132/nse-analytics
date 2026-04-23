@@ -642,11 +642,11 @@ async def myportfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
 async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
-    """Background job to check risk alerts."""
-    # In a real bot, we'd loop through all subscribed users.
-    # For now, we assume the user who started the bot is the admin/main user.
-    # Since we don't have a user list in DB (only portfolio items), we could query unique user_ids.
-    
+    """Background job to check risk alerts. Only runs during NSE trading hours."""
+    from market_hours import is_market_open
+    if not is_market_open():
+        return
+
     db = pm.get_db()
     try:
         from database import PortfolioItem
@@ -1080,7 +1080,11 @@ async def delalert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_price_alerts_job(context: ContextTypes.DEFAULT_TYPE):
-    """Background job: check all active price alerts against current prices."""
+    """Background job: check all active price alerts against current prices. Only runs during NSE trading hours."""
+    from market_hours import is_market_open
+    if not is_market_open():
+        return
+
     db = AlertSessionLocal()
     try:
         alerts = db.query(PriceAlert).filter_by(triggered=False).all()
@@ -1244,6 +1248,89 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Linking failed: {r2.json().get('error', 'Unknown error')}")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def morning_briefing_job(context: ContextTypes.DEFAULT_TYPE):
+    """08:45 EAT Mon-Fri: push pre-market brief to all portfolio users."""
+    from market_hours import NAIROBI_TZ
+    from database import PortfolioItem
+
+    stocks = get_cached_stocks()
+    if not stocks:
+        return
+
+    gainers = sorted([s for s in stocks if s.is_gainer], key=lambda x: x.change_pct or 0, reverse=True)[:3]
+    losers  = sorted([s for s in stocks if s.is_loser],  key=lambda x: x.change_pct or 0)[:3]
+
+    today = datetime.now(tz=NAIROBI_TZ).strftime("%A, %d %b %Y")
+    lines = [
+        f"🌅 *NSE Morning Brief — {today}*",
+        "_Market opens at 09:00 EAT_\n",
+        "*Yesterday's Top Gainers:*",
+    ]
+    for s in gainers:
+        lines.append(f"`{s.ticker:<6}` {s.price:.2f}  {format_change(s.change_pct or 0)}%")
+    lines.append("\n*Yesterday's Top Losers:*")
+    for s in losers:
+        lines.append(f"`{s.ticker:<6}` {s.price:.2f}  {format_change(s.change_pct or 0)}%")
+    lines.append("\n_Use /report for the full market analysis_")
+    msg = "\n".join(lines)
+
+    db = pm.get_db()
+    try:
+        user_ids = [u[0] for u in db.query(PortfolioItem.user_id).distinct().all()]
+    finally:
+        db.close()
+
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(chat_id=uid, text=msg, parse_mode='Markdown')
+        except Exception as e:
+            logger.warning("Morning briefing failed for %s: %s", uid, e)
+
+
+async def market_close_summary_job(context: ContextTypes.DEFAULT_TYPE):
+    """15:05 EAT Mon-Fri: push day P&L summary to each portfolio user."""
+    from market_hours import NAIROBI_TZ
+    from database import PortfolioItem
+
+    db = pm.get_db()
+    try:
+        user_ids = [u[0] for u in db.query(PortfolioItem.user_id).distinct().all()]
+    finally:
+        db.close()
+
+    today = datetime.now(tz=NAIROBI_TZ).strftime("%d %b %Y")
+
+    for uid in user_ids:
+        port = pm.get_portfolio(uid)
+        if not port or not port.get('holdings'):
+            continue
+
+        total_value = port.get('total_value', 0)
+        total_pnl   = port.get('total_pnl', 0)
+        total_pct   = port.get('total_pnl_pct', 0)
+        sign  = "+" if total_pnl >= 0 else ""
+        emoji = "📈" if total_pnl >= 0 else "📉"
+
+        lines = [
+            f"{emoji} *Market Close — {today}*",
+            f"_NSE closed at 15:00 EAT_\n",
+            f"Portfolio Value: *KES {total_value:,.2f}*",
+            f"Day P/L: *{sign}KES {total_pnl:,.2f}* ({sign}{total_pct:.1f}%)\n",
+        ]
+        # Top mover in their portfolio
+        holdings = sorted(port['holdings'], key=lambda h: abs(h.get('pnl_pct', 0)), reverse=True)
+        if holdings:
+            h = holdings[0]
+            icon = "🚀" if h.get('pnl_pct', 0) >= 0 else "🔻"
+            lines.append(f"{icon} Best mover: `{h['ticker']}` {format_change(h.get('pnl_pct', 0))}%")
+        lines.append("\n_Full details: /myportfolio_")
+
+        try:
+            await context.bot.send_message(chat_id=uid, text="\n".join(lines), parse_mode='Markdown')
+        except Exception as e:
+            logger.warning("Close summary failed for %s: %s", uid, e)
 
 
 async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1522,13 +1609,30 @@ def main():
 
     # --- Background Jobs ---
     if app.job_queue:
-        app.job_queue.run_repeating(check_alerts_job, interval=60, first=10)
+        from datetime import time as dt_time
+        from market_hours import NAIROBI_TZ
+
+        # Repeating intraday jobs (market-hours gated inside each function)
+        app.job_queue.run_repeating(check_alerts_job,       interval=60,  first=10)
         app.job_queue.run_repeating(check_price_alerts_job, interval=120, first=30)
+
         # Pre-warm cache every 4 min so users never hit a cold fetch on expiry
         async def prewarm_cache_job(_ctx):
             await get_cached_stocks_async()
         app.job_queue.run_repeating(prewarm_cache_job, interval=240, first=5)
-        logger.info("Jobs: risk-alerts(60s)  price-alerts(120s)  cache-prewarm(240s)")
+
+        # Daily briefings — Mon-Fri only, timezone-aware
+        app.job_queue.run_daily(
+            morning_briefing_job,
+            time=dt_time(8, 45, tzinfo=NAIROBI_TZ),
+            days=(0, 1, 2, 3, 4),
+        )
+        app.job_queue.run_daily(
+            market_close_summary_job,
+            time=dt_time(15, 5, tzinfo=NAIROBI_TZ),
+            days=(0, 1, 2, 3, 4),
+        )
+        logger.info("Jobs: risk-alerts(60s)  price-alerts(120s)  cache-prewarm(240s)  briefings(08:45+15:05 EAT Mon-Fri)")
 
     # --- Graceful SIGTERM shutdown (Docker stop / k8s) ---
     def _on_sigterm(*_):

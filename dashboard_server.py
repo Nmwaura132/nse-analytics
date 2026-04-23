@@ -176,23 +176,7 @@ def api_summary():
     })
 
 
-def get_market_status():
-    """Check if NSE is open (Mon-Fri, 09:00 - 15:00 EAT)."""
-    # Server time is EAT (UTC+3) based on user metadata
-    now = datetime.now()
-    
-    # Check Weekend
-    if now.weekday() >= 5: # 5=Sat, 6=Sun
-        return 'CLOSED'
-        
-    # Check Hours (09:00 - 15:00)
-    current_time = now.time()
-    market_open = datetime.strptime("09:00", "%H:%M").time()
-    market_close = datetime.strptime("15:00", "%H:%M").time()
-    
-    if market_open <= current_time <= market_close:
-        return 'OPEN'
-    return 'CLOSED'
+from market_hours import get_market_status  # noqa: E402 — placed after Flask setup
 
 
 @app.route('/api/stocks')
