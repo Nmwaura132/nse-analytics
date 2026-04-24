@@ -40,13 +40,14 @@ class MLPredictor:
         Get historical OHLCV data for a ticker.
 
         Priority:
-          1. Real CSV (data/history/<TICKER>.csv)
-          2. Yahoo Finance via yfinance (.NR suffix) — real market data
-          3. Geometric Brownian Motion simulation (labeled, for uncovered tickers)
-          4. Emergency minimum fallback
+          1. Real CSV (data/history/<TICKER>.csv) — refreshed weekly from DB log
+          2. StockPriceLog DB table — daily prices accumulated by the bot (Close + Volume)
+          3. Yahoo Finance via yfinance (.NR suffix) — currently dead for NSE Kenya
+          4. Geometric Brownian Motion simulation (labeled, for tickers with no data yet)
+          5. Emergency minimum fallback
 
         The returned DataFrame always has a `_is_real_data` attribute set to True
-        when the data comes from source 1 or 2, False otherwise.  Callers can
+        when the data comes from source 1, 2, or 3, False otherwise.  Callers can
         surface this in the UI so users know whether predictions use real prices.
         """
         ticker_upper = ticker.upper()
@@ -59,14 +60,29 @@ class MLPredictor:
             try:
                 df = pd.read_csv(csv_path)
                 df['Date'] = pd.to_datetime(df['Date'])
-                if not df.empty:
+                if not df.empty and len(df) >= 30:
                     is_real = True
-                    logger.info(f"Loaded real CSV for {ticker_upper}")
+                    logger.info(f"Loaded real CSV for {ticker_upper} ({len(df)} rows)")
+                else:
+                    df = None  # too few rows — fall through to DB
             except Exception as exc:
                 logger.error(f"Failed to load CSV for {ticker_upper}: {exc}")
                 df = None
 
-        # --- 2. Yahoo Finance (real market data) ---
+        # --- 2. StockPriceLog DB ---
+        if df is None:
+            try:
+                from download_history import from_db
+                db_df = from_db(ticker_upper)
+                if db_df is not None and len(db_df) >= 30:
+                    db_df = db_df.reset_index()
+                    df = db_df
+                    is_real = True
+                    logger.info(f"Loaded DB price log for {ticker_upper} ({len(df)} rows)")
+            except Exception as exc:
+                logger.warning(f"DB price log fetch failed for {ticker_upper}: {exc}")
+
+        # --- 3. Yahoo Finance (real market data — currently returning 404 for .NR) ---
         if df is None and _yfinance_fetcher is not None:
             try:
                 yf_df = _yfinance_fetcher.get_history(ticker_upper, period="6mo")
@@ -77,7 +93,7 @@ class MLPredictor:
             except Exception as exc:
                 logger.warning(f"yfinance fetch failed for {ticker_upper}: {exc}")
 
-        # --- 3. GBM Simulation (fallback, clearly labeled) ---
+        # --- 4. GBM Simulation (fallback, clearly labeled) ---
         if df is None:
             try:
                 if ticker_upper not in self.data_cache:
@@ -90,7 +106,7 @@ class MLPredictor:
             except Exception as exc:
                 logger.error(f"GBM simulation failed for {ticker_upper}: {exc}")
 
-        # --- 4. Emergency minimum fallback ---
+        # --- 5. Emergency minimum fallback ---
         if df is None or df.empty:
             logger.warning(f"Using emergency fallback data for {ticker_upper}")
             dates = pd.date_range(end=pd.Timestamp.now(), periods=30, freq='B')
