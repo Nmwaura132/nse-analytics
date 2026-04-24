@@ -60,6 +60,7 @@ services:
       - gateway
       - run
       - '--accept-hooks'
+      - '--replace'
     healthcheck:
       test: ['CMD-SHELL', 'pgrep -f "hermes gateway" > /dev/null || exit 1']
       interval: 30s
