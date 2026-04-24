@@ -1291,6 +1291,38 @@ async def _log_prices_to_db(stocks: list) -> None:
         db.close()
 
 
+async def _get_user_tier(telegram_id: str, first_name: str = "") -> str:
+    """Return user's tier ('free', 'pro', 'club') from backend. Defaults to 'free' on error."""
+    import requests as req
+    try:
+        r = req.post(
+            f"{BACKEND_URL}/auth/telegram-login",
+            json={"telegram_id": telegram_id, "first_name": first_name},
+            timeout=8,
+        )
+        if r.status_code in (200, 201):
+            return r.json().get("tier", "free")
+    except Exception:
+        pass
+    return "free"
+
+
+async def _require_pro(update: Update) -> bool:
+    """Return True if the user is Pro/Club. Send upgrade prompt and return False if not."""
+    uid = str(update.effective_user.id)
+    name = update.effective_user.first_name or ""
+    tier = await _get_user_tier(uid, name)
+    if tier in ("pro", "club"):
+        return True
+    await update.message.reply_text(
+        "🔒 *Pro feature*\n\n"
+        "This command requires a Pro subscription.\n"
+        "Upgrade with `/subscribe pro` — KES 500/month.",
+        parse_mode="Markdown",
+    )
+    return False
+
+
 async def morning_briefing_job(context: ContextTypes.DEFAULT_TYPE):
     """08:45 EAT Mon-Fri: push pre-market brief to all portfolio users."""
     from market_hours import NAIROBI_TZ
@@ -1391,6 +1423,47 @@ async def refresh_history_job(context: ContextTypes.DEFAULT_TYPE):
         logger.info("refresh_history_job: exported %d ticker CSVs", len(results))
     except Exception as exc:
         logger.error("refresh_history_job failed: %s", exc)
+
+
+async def news_scrape_job(context: ContextTypes.DEFAULT_TYPE):
+    """Every 30 min: scrape NSE news and alert portfolio users for matching tickers."""
+    from news_scraper import scrape_nse_news
+    from database import PortfolioItem
+
+    try:
+        new_items = await scrape_nse_news()
+    except Exception as exc:
+        logger.warning("news_scrape_job: scrape failed — %s", exc)
+        return
+
+    if not new_items:
+        return
+
+    db = pm.get_db()
+    try:
+        rows = db.query(PortfolioItem.user_id, PortfolioItem.ticker).all()
+    finally:
+        db.close()
+
+    ticker_users: dict[str, list] = {}
+    for uid, ticker in rows:
+        ticker_users.setdefault(ticker.upper(), []).append(uid)
+
+    for item in new_items:
+        for t in item.get("tickers", []):
+            for uid in ticker_users.get(t, []):
+                msg = (
+                    f"📰 *{t} News*\n"
+                    f"{item['headline']}\n"
+                    f"_{item['source']}_ — [Read]({item['url']})"
+                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=uid, text=msg,
+                        parse_mode="Markdown", disable_web_page_preview=True,
+                    )
+                except Exception as e:
+                    logger.warning("news alert send failed uid=%s: %s", uid, e)
 
 
 async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1573,6 +1646,75 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 
+# ============ FEATURE B: NEWS + DEEP RESEARCH ============
+
+async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/news [TICKER] — Latest NSE news (free); ticker-filtered if arg given."""
+    from news_scraper import get_latest_news, get_news_for_tickers
+
+    if context.args:
+        ticker = context.args[0].upper()
+        items = get_news_for_tickers([ticker])[:8]
+        header = f"📰 *{ticker} News*"
+    else:
+        items = get_latest_news(8)
+        header = "📰 *Latest NSE News*"
+
+    if not items:
+        await update.message.reply_text(
+            f"{header}\n\n_No news cached yet — check back in 30 minutes._",
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = [header, ""]
+    for item in items:
+        tickers_str = (
+            "  `" + "  ".join(item["tickers"]) + "`"
+            if item.get("tickers") else ""
+        )
+        lines.append(f"• [{item['headline']}]({item['url']}){tickers_str}")
+        lines.append(f"  _{item['source']}_\n")
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+    )
+
+
+async def research_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/research TICKER — Pro: deep AI web research via browser-use + DeepSeek."""
+    if not await _require_pro(update):
+        return
+
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "🔍 *Deep Research*\n\nUsage: `/research SCOM`\n_Pro feature — powered by DeepSeek_",
+            parse_mode="Markdown",
+        )
+        return
+
+    ticker = args[0].upper()
+    await update.message.reply_text(
+        f"🔍 Researching *{ticker}*... this takes 30–60 seconds.",
+        parse_mode="Markdown",
+    )
+
+    from research_agent import deep_research
+    try:
+        report = await deep_research(ticker)
+    except RuntimeError as exc:
+        await update.message.reply_text(f"❌ Research unavailable: {exc}")
+        return
+
+    await update.message.reply_text(
+        f"📋 *Deep Research — {ticker}*\n\n{report}",
+        parse_mode="Markdown",
+    )
+
+
 # ============ MAIN ============
 
 def main():
@@ -1630,6 +1772,10 @@ def main():
     app.add_handler(CommandHandler("delalert", delalert_command))
     app.add_handler(CommandHandler("dividends", dividends_command))
 
+    # Feature B: News + Deep Research
+    app.add_handler(CommandHandler("news",     news_command))
+    app.add_handler(CommandHandler("research", research_command))
+
     # Message Handler for NLP
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
@@ -1659,6 +1805,8 @@ def main():
             ("alert",       "⭐ Price alert — /alert SCOM > 35"),
             ("myalerts",    "⭐ View active alerts"),
             ("delalert",    "⭐ Delete alert — /delalert 1"),
+            ("news",        "Latest NSE news — /news SCOM"),
+            ("research",    "⭐ Deep AI research — /research SCOM"),
             # Subscription
             ("plan",        "Your current plan & expiry"),
             ("subscribe",   "Upgrade to Pro or Club"),
@@ -1700,7 +1848,9 @@ def main():
             time=dt_time(16, 0, tzinfo=NAIROBI_TZ),
             days=(4,),  # Friday only
         )
-        logger.info("Jobs: risk-alerts(60s)  price-alerts(120s)  cache-prewarm(240s)  briefings(08:45+15:05 EAT Mon-Fri)  history-refresh(Fri 16:00 EAT)")
+        # News scrape every 30 min + ticker-matched Telegram alerts
+        app.job_queue.run_repeating(news_scrape_job, interval=1800, first=60)
+        logger.info("Jobs: risk-alerts(60s)  price-alerts(120s)  cache-prewarm(240s)  briefings(08:45+15:05 EAT Mon-Fri)  history-refresh(Fri 16:00 EAT)  news-scrape(1800s)")
 
     # --- Graceful SIGTERM shutdown (Docker stop / k8s) ---
     def _on_sigterm(*_):

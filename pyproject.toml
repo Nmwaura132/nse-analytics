@@ -27,6 +27,10 @@ matplotlib = "^3.10.8"
 sqlalchemy = "^2.0.47"
 gunicorn = "^23.0.0"
 whitenoise = "^6.9.0"
+playwright = ">=1.44.0"
+beautifulsoup4 = ">=4.12.0"
+browser-use = ">=0.1.0"
+langchain-openai = ">=0.1.0"
 
 
 [build-system]
