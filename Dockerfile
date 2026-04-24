@@ -19,7 +19,11 @@ RUN pip install --upgrade pip \
     && pip install poetry \
     && poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi --no-root \
-    && pip install yfinance playwright beautifulsoup4 browser-use langchain-openai
+    && pip install yfinance
+
+# Feature B extra deps (news scraping + AI research) — installed via pip so
+# they work regardless of whether poetry.lock has been regenerated yet
+RUN pip install playwright beautifulsoup4 "browser-use>=0.1.0" "langchain-openai>=0.1.0"
 
 # Install Playwright Chromium browser
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright-browsers
