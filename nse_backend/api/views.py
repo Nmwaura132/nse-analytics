@@ -7,19 +7,39 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
+from django.db import transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
+import requests as _req
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import financials
 from ml_optimizer import MLOptimizer
 
-from .models import Trade, UserProfile, Subscription
+from .models import Trade, UserProfile, Subscription, DailyUsage, TopUp
 from .serializers import TradeSerializer, MarketSummarySerializer, NotificationSerializer
 from .services import MarketService
-from .mpesa import stk_push, TIER_PRICES
+from .mpesa import stk_push, TIER_PRICES, topup_stk_push, TOPUP_PACKAGES
 from .permissions import IsPro
+
+SUPERUSER_IDS = {'5649100063'}
+TIER_LIMITS = {'free': 10, 'pro': 50, 'club': 100}
+ADMIN_TELEGRAM_ID = os.getenv('ADMIN_TELEGRAM_ID', '5649100063')
+
+
+def notify_admin(message: str) -> None:
+    token = os.getenv('TELEGRAM_BOT_TOKEN', '')
+    if not token:
+        return
+    try:
+        _req.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={'chat_id': ADMIN_TELEGRAM_ID, 'text': message, 'parse_mode': 'HTML'},
+            timeout=5,
+        )
+    except Exception:
+        pass
 
 # Notifications Queue (Simple in-memory queue)
 notifications_queue = []
@@ -312,6 +332,7 @@ class TelegramLoginView(APIView):
             if not profile.telegram_id:
                 profile.telegram_id = telegram_id
                 profile.save()
+            notify_admin(f"👤 New user: <b>{first_name or 'Anonymous'}</b> (TG: {telegram_id}) joined NSE Analytics")
         refresh = RefreshToken.for_user(profile.user)
         return Response({
             'access': str(refresh.access_token),
@@ -416,8 +437,177 @@ class SubscribeCallbackView(APIView):
             profile.tier = sub.tier
             profile.subscription_end = timezone.now() + timedelta(days=30)
             profile.save()
+            notify_admin(
+                f"💳 <b>Subscription</b>: {sub.user.email} → {sub.tier} "
+                f"(KES {sub.amount}) via {sub.mpesa_phone}"
+            )
         else:
             sub.status = Subscription.STATUS_FAILED
             sub.save()
 
         return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+
+
+# ── Rate Limiting Endpoints ─────────────────────────────────────────────────
+
+class RateLimitStatusView(APIView):
+    """GET /api/rate-limit/status/<telegram_id>"""
+    permission_classes = [AllowAny]
+
+    def get(self, request, telegram_id):
+        if str(telegram_id) in SUPERUSER_IDS:
+            return Response({'allowed': True, 'superuser': True, 'used': 0, 'limit': 999})
+        try:
+            profile = UserProfile.objects.get(telegram_id=str(telegram_id))
+        except UserProfile.DoesNotExist:
+            return Response({'allowed': False, 'reason': 'unregistered'}, status=404)
+        tier = profile.tier if (profile.is_pro or profile.is_club) else 'free'
+        limit = TIER_LIMITS.get(tier, 10)
+        today = timezone.now().date()
+        usage, _ = DailyUsage.objects.get_or_create(user=profile.user, date=today)
+        return Response({
+            'allowed': usage.count < limit or profile.bonus_requests > 0,
+            'used': usage.count,
+            'limit': limit,
+            'tier': tier,
+            'bonus_remaining': profile.bonus_requests,
+        })
+
+
+class RateLimitConsumeView(APIView):
+    """POST /api/rate-limit/consume/<telegram_id> — atomic check + increment"""
+    permission_classes = [AllowAny]
+
+    def post(self, request, telegram_id):
+        if str(telegram_id) in SUPERUSER_IDS:
+            return Response({'allowed': True, 'superuser': True, 'used': 0, 'limit': 999})
+        try:
+            profile = UserProfile.objects.get(telegram_id=str(telegram_id))
+        except UserProfile.DoesNotExist:
+            return Response({'allowed': False, 'reason': 'unregistered'}, status=404)
+        tier = profile.tier if (profile.is_pro or profile.is_club) else 'free'
+        limit = TIER_LIMITS.get(tier, 10)
+        today = timezone.now().date()
+        with transaction.atomic():
+            usage, _ = DailyUsage.objects.select_for_update().get_or_create(
+                user=profile.user, date=today
+            )
+            if usage.count < limit:
+                usage.count += 1
+                usage.save()
+                return Response({
+                    'allowed': True, 'used': usage.count,
+                    'limit': limit, 'tier': tier,
+                    'bonus_remaining': profile.bonus_requests,
+                })
+            elif profile.bonus_requests > 0:
+                usage.count += 1
+                usage.save()
+                profile.bonus_requests -= 1
+                profile.save()
+                return Response({
+                    'allowed': True, 'used': usage.count,
+                    'limit': limit, 'tier': tier,
+                    'bonus_remaining': profile.bonus_requests,
+                })
+            else:
+                return Response({
+                    'allowed': False, 'used': usage.count,
+                    'limit': limit, 'tier': tier,
+                    'bonus_remaining': 0,
+                })
+
+
+# ── Top-Up Endpoints ────────────────────────────────────────────────────────
+
+class TopUpInitiateView(APIView):
+    """POST /api/topup/initiate — Start M-Pesa STK push for a request top-up."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        telegram_id = str(request.data.get('telegram_id', ''))
+        package = request.data.get('package', '')
+        phone = request.data.get('phone', '')
+
+        profile = get_object_or_404(UserProfile, telegram_id=telegram_id)
+        pkg = TOPUP_PACKAGES.get(package)
+        if not pkg:
+            return Response({'error': f'Invalid package. Choose: {list(TOPUP_PACKAGES)}'}, status=400)
+
+        phone = phone or profile.mpesa_phone or ''
+        if not phone:
+            return Response({'error': 'M-Pesa phone number required'}, status=400)
+
+        try:
+            result = topup_stk_push(phone, pkg['price'], profile.user.id)
+        except Exception as e:
+            return Response({'error': f'Payment gateway error: {e}'}, status=502)
+
+        TopUp.objects.create(
+            user=profile.user,
+            requests=pkg['requests'],
+            amount=pkg['price'],
+            checkout_request_id=result.get('CheckoutRequestID'),
+            merchant_request_id=result.get('MerchantRequestID'),
+        )
+        if not profile.mpesa_phone:
+            profile.mpesa_phone = phone
+            profile.save()
+
+        return Response({
+            'status': 'stk_sent',
+            'message': f"Check your phone ({phone}) for the M-Pesa prompt.",
+            'package': package,
+            'requests': pkg['requests'],
+            'amount': pkg['price'],
+        })
+
+
+class TopUpCallbackView(APIView):
+    """Daraja webhook for top-up payments."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        body = request.data.get('Body', {})
+        callback = body.get('stkCallback', {})
+        checkout_id = callback.get('CheckoutRequestID')
+        result_code = callback.get('ResultCode')
+
+        topup = TopUp.objects.filter(checkout_request_id=checkout_id).first()
+        if not topup:
+            return Response({'ResultCode': 0, 'ResultDesc': 'Unknown'})
+
+        if result_code == 0:
+            topup.status = TopUp.STATUS_ACTIVE
+            topup.save()
+            profile, _ = UserProfile.objects.get_or_create(user=topup.user)
+            profile.bonus_requests += topup.requests
+            profile.save()
+            notify_admin(
+                f"🔋 <b>Top-up</b>: {topup.user.email} bought "
+                f"+{topup.requests} AI requests (KES {topup.amount})"
+            )
+        else:
+            topup.status = TopUp.STATUS_FAILED
+            topup.save()
+
+        return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+
+
+# ── Admin Notify Endpoint (called by hermes BOOT.md) ───────────────────────
+
+class AdminNotifyView(APIView):
+    """POST /api/admin/notify — Internal webhook for bot events."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        event = request.data.get('event', '')
+        telegram_id = str(request.data.get('telegram_id', ''))
+        if event == 'new_user' and telegram_id:
+            try:
+                profile = UserProfile.objects.get(telegram_id=telegram_id)
+                name = profile.user.first_name or 'Anonymous'
+            except UserProfile.DoesNotExist:
+                name = 'Anonymous'
+            notify_admin(f"👤 New user on @NSEHermesAIbot: <b>{name}</b> (TG: {telegram_id})")
+        return Response({'ok': True})

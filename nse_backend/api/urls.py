@@ -32,4 +32,15 @@ urlpatterns = [
     path('backtest/<str:ticker>', views.BacktestView.as_view()),
     path('predict/<str:ticker>', views.PredictionView.as_view()),
     path('history/<str:ticker>', views.HistoryView.as_view()),
+
+    # Rate limiting
+    path('rate-limit/status/<str:telegram_id>', views.RateLimitStatusView.as_view()),
+    path('rate-limit/consume/<str:telegram_id>', views.RateLimitConsumeView.as_view()),
+
+    # Top-up
+    path('topup/initiate', views.TopUpInitiateView.as_view()),
+    path('topup/callback', views.TopUpCallbackView.as_view()),
+
+    # Admin events (called by hermes gateway)
+    path('admin/notify', views.AdminNotifyView.as_view()),
 ]

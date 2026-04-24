@@ -14,6 +14,7 @@ class UserProfile(models.Model):
     tier = models.CharField(max_length=10, choices=TIER_CHOICES, default=TIER_FREE)
     subscription_end = models.DateTimeField(null=True, blank=True)
     mpesa_phone = models.CharField(max_length=15, null=True, blank=True)
+    bonus_requests = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     @property
@@ -69,3 +70,40 @@ class Trade(models.Model):
 
     def __str__(self):
         return f"{self.user_id} - {self.ticker}: {self.qty} @ {self.avg_cost}"
+
+
+class DailyUsage(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='daily_usage')
+    date = models.DateField()
+    count = models.IntegerField(default=0)
+
+    class Meta:
+        unique_together = ('user', 'date')
+
+    def __str__(self):
+        return f"{self.user.username} {self.date}: {self.count}"
+
+
+class TopUp(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_ACTIVE = 'active'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_ACTIVE, 'Active'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='topups')
+    requests = models.IntegerField()
+    amount = models.IntegerField()
+    checkout_request_id = models.CharField(max_length=100, null=True, blank=True)
+    merchant_request_id = models.CharField(max_length=100, null=True, blank=True)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.user.username} +{self.requests} reqs KES {self.amount} [{self.status}]"

@@ -28,6 +28,12 @@ TIER_PRICES = {
     "club": 3000,
 }
 
+TOPUP_PACKAGES = {
+    "topup_10": {"requests": 10, "price": 50},
+    "topup_25": {"requests": 25, "price": 100},
+    "topup_50": {"requests": 50, "price": 200},
+}
+
 
 def _get_token() -> str:
     creds = base64.b64encode(f"{_CONSUMER_KEY}:{_CONSUMER_SECRET}".encode()).decode()
@@ -69,6 +75,39 @@ def stk_push(phone: str, tier: str, user_id: int) -> dict:
         "CallBackURL": _CALLBACK_URL,
         "AccountReference": f"NSEPro-{user_id}",
         "TransactionDesc": f"NSE Pro {tier.capitalize()} subscription",
+    }
+
+    r = requests.post(
+        f"{_BASE_URL}/mpesa/stkpush/v1/processrequest",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def topup_stk_push(phone: str, price: int, user_id: int) -> dict:
+    """Initiate STK Push for a request top-up package."""
+    phone = phone.lstrip("+").replace(" ", "")
+    if phone.startswith("0"):
+        phone = "254" + phone[1:]
+
+    token = _get_token()
+    password, timestamp = _password_and_timestamp()
+
+    payload = {
+        "BusinessShortCode": _SHORTCODE,
+        "Password": password,
+        "Timestamp": timestamp,
+        "TransactionType": "CustomerPayBillOnline",
+        "Amount": price,
+        "PartyA": phone,
+        "PartyB": _SHORTCODE,
+        "PhoneNumber": phone,
+        "CallBackURL": _CALLBACK_URL,
+        "AccountReference": f"NSETopUp-{user_id}",
+        "TransactionDesc": "NSE Analytics AI request top-up",
     }
 
     r = requests.post(

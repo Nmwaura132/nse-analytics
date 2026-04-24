@@ -419,6 +419,17 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /predict command - Trend predictions with advanced signals."""
+    uid = str(update.effective_user.id)
+    rl = await _consume_rate_limit(uid)
+    if not rl.get("allowed"):
+        used, limit, tier = rl.get("used", 0), rl.get("limit", 0), rl.get("tier", "free")
+        await update.message.reply_text(
+            f"⚠️ *Daily limit reached* ({used}/{limit} — {tier} plan)\n\n"
+            "Top up: `/topup` — KES 50 for +10 requests\n"
+            "Or upgrade: `/subscribe pro` — 50 requests/day",
+            parse_mode="Markdown",
+        )
+        return
     try:
         await update.message.reply_text("🔮 Analyzing trends with advanced algorithms...")
         
@@ -1323,6 +1334,25 @@ async def _require_pro(update: Update) -> bool:
     return False
 
 
+async def _consume_rate_limit(telegram_id: str) -> dict:
+    """Call backend to atomically check + consume 1 AI request quota.
+
+    Returns dict with keys: allowed (bool), used, limit, tier, bonus_remaining.
+    On network error returns allowed=True so users aren't blocked by backend outages.
+    """
+    import requests as req
+    try:
+        r = req.post(
+            f"{BACKEND_URL}/rate-limit/consume/{telegram_id}",
+            timeout=8,
+        )
+        if r.status_code in (200, 201):
+            return r.json()
+    except Exception:
+        pass
+    return {"allowed": True, "used": 0, "limit": 0, "tier": "unknown"}
+
+
 async def morning_briefing_job(context: ContextTypes.DEFAULT_TYPE):
     """08:45 EAT Mon-Fri: push pre-market brief to all portfolio users."""
     from market_hours import NAIROBI_TZ
@@ -1531,6 +1561,55 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Could not process payment: {e}")
 
 
+async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/topup [10|25|50] [phone] — Buy extra AI request credits via M-Pesa."""
+    args = context.args or []
+    package_map = {"10": "topup_10", "25": "topup_25", "50": "topup_50"}
+    size = args[0] if args else None
+    phone = args[1] if len(args) > 1 else None
+
+    if not size or size not in package_map:
+        await update.message.reply_text(
+            "🔋 *AI Request Top-Up*\n\n"
+            "Run out of daily AI requests? Top up instantly via M-Pesa:\n\n"
+            "📦 `/topup 10 0712345678` — +10 requests — *KES 50*\n"
+            "📦 `/topup 25 0712345678` — +25 requests — *KES 100*\n"
+            "📦 `/topup 50 0712345678` — +50 requests — *KES 200*\n\n"
+            "_Credits never expire. Shared across NSE Pro Bot & @NSEHermesAIbot._",
+            parse_mode="Markdown",
+        )
+        return
+
+    if not phone:
+        await update.message.reply_text(
+            f"Please include your M-Pesa number:\n`/topup {size} 0712345678`",
+            parse_mode="Markdown",
+        )
+        return
+
+    telegram_id = str(update.effective_user.id)
+    package = package_map[size]
+    try:
+        import requests as req
+        r = req.post(
+            f"{BACKEND_URL}/topup/initiate",
+            json={"telegram_id": telegram_id, "package": package, "phone": phone},
+            timeout=30,
+        )
+        data = r.json()
+        if r.status_code == 200:
+            await update.message.reply_text(
+                f"✅ *M-Pesa prompt sent!*\n\n"
+                f"Check your phone `{phone}` and enter your PIN.\n"
+                f"+{data['requests']} AI requests added instantly after payment.",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(f"❌ Error: {data.get('error', 'Payment failed')}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not process payment: {e}")
+
+
 async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/plan — Show current subscription tier and expiry."""
     telegram_id = str(update.effective_user.id)
@@ -1586,6 +1665,18 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Example: `/ask SCOM should I buy?`\n\n"
             "_Powered by OpenClaw AI_",
             parse_mode='Markdown'
+        )
+        return
+
+    uid = str(update.effective_user.id)
+    rl = await _consume_rate_limit(uid)
+    if not rl.get("allowed"):
+        used, limit, tier = rl.get("used", 0), rl.get("limit", 0), rl.get("tier", "free")
+        await update.message.reply_text(
+            f"⚠️ *Daily limit reached* ({used}/{limit} — {tier} plan)\n\n"
+            "Top up: `/topup` — KES 50 for +10 requests\n"
+            "Or upgrade: `/subscribe pro` — 50 requests/day",
+            parse_mode="Markdown",
         )
         return
 
@@ -1688,6 +1779,18 @@ async def research_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_pro(update):
         return
 
+    uid = str(update.effective_user.id)
+    rl = await _consume_rate_limit(uid)
+    if not rl.get("allowed"):
+        used, limit, tier = rl.get("used", 0), rl.get("limit", 0), rl.get("tier", "pro")
+        await update.message.reply_text(
+            f"⚠️ *Daily limit reached* ({used}/{limit} — {tier} plan)\n\n"
+            "Top up: `/topup` — KES 50 for +10 requests\n"
+            "Or upgrade: `/subscribe club` — 100 requests/day",
+            parse_mode="Markdown",
+        )
+        return
+
     args = context.args or []
     if not args:
         await update.message.reply_text(
@@ -1760,10 +1863,11 @@ def main():
     # AI Q&A (OpenClaw)
     app.add_handler(CommandHandler("ask", ask_command))
 
-    # Subscription
+    # Subscription & Top-Up
     app.add_handler(CommandHandler("subscribe", subscribe_command))
     app.add_handler(CommandHandler("upgrade",   subscribe_command))
     app.add_handler(CommandHandler("plan",      plan_command))
+    app.add_handler(CommandHandler("topup",     topup_command))
     app.add_handler(CommandHandler("link",      link_command))
 
     # Alert & Dividend Handlers
@@ -1811,6 +1915,7 @@ def main():
             ("plan",        "Your current plan & expiry"),
             ("subscribe",   "Upgrade to Pro or Club"),
             ("upgrade",     "Upgrade your plan"),
+            ("topup",       "Buy extra AI request credits"),
             ("link",        "Link existing web account to Telegram"),
         ])
     app.post_init = set_commands
