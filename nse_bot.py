@@ -1250,6 +1250,47 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")
 
 
+async def _log_prices_to_db(stocks: list) -> None:
+    """Persist today's closing prices from the RapidAPI cache into StockPriceLog."""
+    from database import StockPriceLog, SessionLocal
+    from market_hours import now_eat
+    import asyncio
+
+    today = now_eat().date()
+    db = SessionLocal()
+    try:
+        inserted = 0
+        for s in stocks:
+            ticker = s.get('ticker')
+            price = s.get('price')
+            if not ticker or price is None:
+                continue
+            existing = db.query(StockPriceLog).filter_by(ticker=ticker, trade_date=today).first()
+            if existing:
+                existing.close = price
+                existing.volume = s.get('volume')
+                existing.change = s.get('change')
+                existing.change_pct = s.get('change_pct')
+            else:
+                db.add(StockPriceLog(
+                    ticker=ticker,
+                    trade_date=today,
+                    close=price,
+                    volume=s.get('volume'),
+                    change=s.get('change'),
+                    change_pct=s.get('change_pct'),
+                ))
+                inserted += 1
+        db.commit()
+        if inserted:
+            logger.debug("_log_prices_to_db: inserted %d new price rows for %s", inserted, today)
+    except Exception as exc:
+        db.rollback()
+        logger.warning("_log_prices_to_db failed: %s", exc)
+    finally:
+        db.close()
+
+
 async def morning_briefing_job(context: ContextTypes.DEFAULT_TYPE):
     """08:45 EAT Mon-Fri: push pre-market brief to all portfolio users."""
     from market_hours import NAIROBI_TZ
@@ -1331,6 +1372,25 @@ async def market_close_summary_job(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=uid, text="\n".join(lines), parse_mode='Markdown')
         except Exception as e:
             logger.warning("Close summary failed for %s: %s", uid, e)
+
+
+async def refresh_history_job(context: ContextTypes.DEFAULT_TYPE):
+    """Friday 16:00 EAT: export DB price log to data/history/*.csv for all live tickers."""
+    import asyncio
+    from download_history import run as download_run
+    logger.info("refresh_history_job: exporting price log to CSV files")
+    try:
+        stocks = get_cached_stocks()
+        tickers = [s['ticker'] for s in stocks if s.get('ticker')]
+        if not tickers:
+            logger.warning("refresh_history_job: no tickers in cache, skipping")
+            return
+        results = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: download_run(tickers, refresh=False)
+        )
+        logger.info("refresh_history_job: exported %d ticker CSVs", len(results))
+    except Exception as exc:
+        logger.error("refresh_history_job failed: %s", exc)
 
 
 async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1616,9 +1676,11 @@ def main():
         app.job_queue.run_repeating(check_alerts_job,       interval=60,  first=10)
         app.job_queue.run_repeating(check_price_alerts_job, interval=120, first=30)
 
-        # Pre-warm cache every 4 min so users never hit a cold fetch on expiry
+        # Pre-warm cache every 4 min + log closing prices for ML history
         async def prewarm_cache_job(_ctx):
-            await get_cached_stocks_async()
+            stocks = await get_cached_stocks_async()
+            if stocks:
+                await _log_prices_to_db(stocks)
         app.job_queue.run_repeating(prewarm_cache_job, interval=240, first=5)
 
         # Daily briefings — Mon-Fri only, timezone-aware
@@ -1632,7 +1694,13 @@ def main():
             time=dt_time(15, 5, tzinfo=NAIROBI_TZ),
             days=(0, 1, 2, 3, 4),
         )
-        logger.info("Jobs: risk-alerts(60s)  price-alerts(120s)  cache-prewarm(240s)  briefings(08:45+15:05 EAT Mon-Fri)")
+        # Weekly history refresh — Friday 16:00 EAT (after close + 1h)
+        app.job_queue.run_daily(
+            refresh_history_job,
+            time=dt_time(16, 0, tzinfo=NAIROBI_TZ),
+            days=(4,),  # Friday only
+        )
+        logger.info("Jobs: risk-alerts(60s)  price-alerts(120s)  cache-prewarm(240s)  briefings(08:45+15:05 EAT Mon-Fri)  history-refresh(Fri 16:00 EAT)")
 
     # --- Graceful SIGTERM shutdown (Docker stop / k8s) ---
     def _on_sigterm(*_):

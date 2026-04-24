@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, UniqueConstraint, Date
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from datetime import datetime, timezone
 import os
@@ -44,6 +44,29 @@ class PriceAlert(Base):
     def __repr__(self):
         symbol = '>' if self.condition == 'above' else '<'
         return f"<Alert({self.ticker} {symbol} {self.target_price})>"
+
+
+class StockPriceLog(Base):
+    """
+    One row per ticker per trading day — built from RapidAPI cache refreshes.
+    Accumulates into the historical dataset used by ml_predictor.py.
+    """
+    __tablename__ = 'stock_price_log'
+    __table_args__ = (
+        UniqueConstraint('ticker', 'trade_date', name='uq_ticker_date'),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(16), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    close = Column(Float, nullable=False)
+    volume = Column(Float)
+    change = Column(Float)
+    change_pct = Column(Float)
+    logged_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def __repr__(self):
+        return f"<PriceLog({self.ticker} {self.trade_date} close={self.close})>"
 
 
 # Create tables
