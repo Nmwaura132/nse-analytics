@@ -51,17 +51,21 @@ services:
     image: 'nousresearch/hermes-agent:latest'
     restart: unless-stopped
     environment:
-      OPENAI_API_KEY: '${DEEPSEEK_API_KEY:-}'
-      OPENAI_BASE_URL: 'https://api.deepseek.com/v1'
-      OPENAI_MODEL: 'deepseek-chat'
-    ports:
-      - '${HERMES_PORT:-8642}:8642'
+      HERMES_HOME: /opt/data
+      HERMES_ACCEPT_HOOKS: '1'
+    volumes:
+      - '/opt/nse-pro/hermes-data:/opt/data'
+    command:
+      - hermes
+      - gateway
+      - run
+      - '--accept-hooks'
     healthcheck:
-      test: ['CMD-SHELL', 'curl -sf http://localhost:8642/health || exit 1']
+      test: ['CMD-SHELL', 'pgrep -f "hermes gateway" > /dev/null || exit 1']
       interval: 30s
       timeout: 5s
-      retries: 5
-      start_period: 30s
+      retries: 3
+      start_period: 20s
 
   nse-dashboard:
     build:
