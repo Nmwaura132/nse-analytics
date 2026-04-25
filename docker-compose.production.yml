@@ -77,6 +77,9 @@ services:
       OPENCLAW_API_URL: 'http://openclaw-gateway:18789'
       HERMES_API_URL: 'http://hermes-agent:8642'
       DATABASE_URL: 'postgresql://${POSTGRES_USER:-nse_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nse_db}'
+    networks:
+      - default
+      - coolify
     ports:
       - '5001:5001'
     volumes:
@@ -88,6 +91,16 @@ services:
     command:
       - python
       - dashboard_server.py
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.nse-dashboard.rule=Host(`nse.37.221.93.219.sslip.io`)'
+      - 'traefik.http.routers.nse-dashboard.entrypoints=https'
+      - 'traefik.http.routers.nse-dashboard.tls=true'
+      - 'traefik.http.routers.nse-dashboard.tls.certresolver=letsencrypt'
+      - 'traefik.http.services.nse-dashboard.loadbalancer.server.port=5001'
+      - 'traefik.http.routers.nse-dashboard-http.rule=Host(`nse.37.221.93.219.sslip.io`)'
+      - 'traefik.http.routers.nse-dashboard-http.entrypoints=http'
+      - 'traefik.http.routers.nse-dashboard-http.middlewares=redirect-https@docker'
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:5001/health']
       interval: 30s
@@ -109,6 +122,9 @@ services:
       DB_PASSWORD: '${POSTGRES_PASSWORD}'
       PYTHONPATH: /app/nse_backend
       ALLOWED_HOSTS: '${ALLOWED_HOSTS:-localhost,127.0.0.1}'
+    networks:
+      - default
+      - coolify
     ports:
       - '8001:8000'
     depends_on:
@@ -122,7 +138,17 @@ services:
         cd /app/nse_backend &&
         python manage.py migrate --noinput &&
         python manage.py collectstatic --noinput &&
-        gunicorn config.wsgi:application -w 2 -b 0.0.0.0:8000
+        gunicorn config.wsgi:application -w 6 -b 0.0.0.0:8000
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.nse-api.rule=Host(`api.37.221.93.219.sslip.io`)'
+      - 'traefik.http.routers.nse-api.entrypoints=https'
+      - 'traefik.http.routers.nse-api.tls=true'
+      - 'traefik.http.routers.nse-api.tls.certresolver=letsencrypt'
+      - 'traefik.http.services.nse-api.loadbalancer.server.port=8000'
+      - 'traefik.http.routers.nse-api-http.rule=Host(`api.37.221.93.219.sslip.io`)'
+      - 'traefik.http.routers.nse-api-http.entrypoints=http'
+      - 'traefik.http.routers.nse-api-http.middlewares=redirect-https@docker'
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:8000/api/stocks']
       interval: 30s
@@ -154,3 +180,7 @@ services:
         condition: service_started
       nse-api:
         condition: service_started
+
+networks:
+  coolify:
+    external: true
