@@ -76,6 +76,8 @@ MAX_NOTIFICATIONS = 50
 
 class StockListView(APIView):
     """List all stocks with basic valuation metrics."""
+    permission_classes = [AllowAny]
+
     def get(self, request):
         cache = MarketService.get_data()
         stocks_data = []
@@ -95,6 +97,8 @@ class StockListView(APIView):
 
 class StockDetailView(APIView):
     """Retrieve detailed analysis for a specific stock."""
+    permission_classes = [AllowAny]
+
     def get(self, request, ticker):
         cache = MarketService.get_data()
         enhanced = cache.get('enhanced', [])
