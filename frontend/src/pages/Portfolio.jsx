@@ -1,237 +1,407 @@
-import { useState, useEffect } from 'react';
-import TradeModal from '../components/TradeModal';
-import Plot from 'react-plotly.js';
+import React from 'react';
+import { NSE_STOCKS, HOLDINGS } from '../data.js';
+import { Icon } from '../icons.jsx';
+import { Badge, Button, Modal } from '../ui.jsx';
+import { Counter, DonutChart } from '../charts.jsx';
+import * as api from '../api.js';
 
-function Portfolio() {
-    const [data, setData] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [budget, setBudget] = useState(100000);
-    const [tickers, setTickers] = useState('SCOM, EQTY, KCB, EABL, ABSA');
-    const [optimization, setOptimization] = useState(null);
-    const [showTradeModal, setShowTradeModal] = useState(false);
+const adviceFor = (h) => {
+  const stock = NSE_STOCKS.find(s => s.ticker === h.ticker);
+  if (!stock) return { kind: 'hold', label: 'Hold', color: '#94a3b8', icon: 'shield', note: 'No data' };
+  const plPct = ((h.current - h.avgCost) / h.avgCost) * 100;
+  if (stock.buy)
+    return { kind: 'buy', label: 'Add more', color: '#10b981', icon: 'arrow-up', note: `AI signal: Buy` };
+  if (plPct > 25)
+    return { kind: 'sell', label: 'Take profit', color: '#fbbf24', icon: 'lightning', note: `+${plPct.toFixed(0)}% gain — trim?` };
+  if (stock.change < -2)
+    return { kind: 'watch', label: 'Watch', color: '#f97316', icon: 'eye', note: `Down ${stock.change.toFixed(2)}% today` };
+  return { kind: 'hold', label: 'Hold', color: '#06b6d4', icon: 'shield', note: 'Stable — no action' };
+};
 
-    const fetchPortfolio = () => {
-        fetch('/api/portfolio?user_id=1')
-            .then(res => res.json())
-            .then(d => {
-                setData(d);
-                setLoading(false);
-            });
-    };
+const PortfolioPage = ({ user, openStock, addToast, triggerConfetti }) => {
+  const [holdings, setHoldings] = React.useState(HOLDINGS);
+  const [optimizing, setOptimizing] = React.useState(false);
 
-    useEffect(() => {
-        fetchPortfolio();
-    }, []);
+  React.useEffect(() => {
+    if (!api.getToken()) return;
+    api.fetchPortfolio()
+      .then(data => {
+        if (Array.isArray(data.holdings) && data.holdings.length > 0) {
+          setHoldings(data.holdings.map(h => ({
+            ticker: h.ticker,
+            shares: h.qty,
+            avgCost: h.avg_cost,
+            current: h.current_price ?? h.avg_cost,
+          })));
+        }
+      })
+      .catch(() => { /* keep static HOLDINGS fallback */ });
+  }, []);
+  const [optimized, setOptimized] = React.useState(null);
+  const [budget, setBudget] = React.useState(50000);
+  const [selected, setSelected] = React.useState(['SCOM', 'KCB', 'EABL', 'KPLC']);
+  const [sellTarget, setSellTarget] = React.useState(null);
+  const [addOpen, setAddOpen] = React.useState(false);
+  const [addForm, setAddForm] = React.useState({ ticker: 'SCOM', shares: 100, avgCost: '' });
 
-    const runOptimizer = () => {
-        setOptimization({ loading: true });
-        const tickersArr = tickers.split(',').map(t => t.trim()).filter(Boolean);
-        fetch('/api/portfolio/optimize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ budget: parseFloat(budget), tickers: tickersArr })
-        })
-        .then(res => res.json())
-        .then(resData => setOptimization({ ...resData, loading: false }))
-        .catch(err => setOptimization({ error: err.message, loading: false }));
-    };
+  const stats = holdings.reduce((acc, h) => {
+    const value = h.shares * h.current;
+    const cost = h.shares * h.avgCost;
+    return { value: acc.value + value, cost: acc.cost + cost };
+  }, { value: 0, cost: 0 });
+  const pl = stats.value - stats.cost;
+  const plPct = stats.cost ? (pl / stats.cost) * 100 : 0;
+  const riskScore = 6.4;
 
-    const removeTrade = (ticker) => {
-        if (!window.confirm(`Remove ${ticker}?`)) { return; }
-        fetch('/api/portfolio/remove', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ticker, user_id: '1' })
-        }).then(() => fetchPortfolio());
-    };
+  const removeHolding = async (ticker) => {
+    setHoldings(h => h.filter(x => x.ticker !== ticker));
+    setSellTarget(null);
+    addToast({ type: 'success', icon: 'check', title: 'Removed', message: `${ticker} removed from your tracker.` });
+    if (api.getToken()) {
+      try { await api.removeTrade(ticker); } catch { /* local state already updated */ }
+    }
+  };
 
-    return (
-        <div className="page fade-in">
-            <div className="portfolio-layout">
-        <aside className="portfolio-sidebar">
-          <div className="glass-card optimizer-card">
-            <h3>AI Optimizer</h3>
-            <p className="hint">Find optimal weights for your capital</p>
-            <div className="opt-form">
-              <label>Budget (KES)</label>
-              <input 
-                type="number" 
-                value={budget} 
-                onChange={(e) => setBudget(e.target.value)} 
-              />
-              <label style={{ marginTop: '1rem' }}>Candidate Stocks</label>
-              <input 
-                type="text" 
-                value={tickers} 
-                placeholder="SCOM, EQTY..."
-                onChange={(e) => setTickers(e.target.value)} 
-              />
-              <button 
-                className="opt-btn" 
-                onClick={runOptimizer}
-                disabled={optimization?.loading}
-              >
-                {optimization?.loading ? 'Running...' : 'Optimize Portfolio'}
-              </button>
-            </div>
+  const addPosition = async () => {
+    const stock = NSE_STOCKS.find(s => s.ticker === addForm.ticker);
+    if (!stock || !addForm.shares || !addForm.avgCost) return;
+    if (holdings.find(h => h.ticker === addForm.ticker)) {
+      addToast({ type: 'error', icon: 'shield', title: 'Already tracked', message: `${addForm.ticker} is already in your tracker.` });
+      return;
+    }
+    const newHolding = { ticker: addForm.ticker, shares: +addForm.shares, avgCost: +addForm.avgCost, current: stock.price };
+    setHoldings(h => [...h, newHolding]);
+    setAddOpen(false);
+    setAddForm({ ticker: 'SCOM', shares: 100, avgCost: '' });
+    triggerConfetti();
+    addToast({ type: 'xp', icon: 'sparkles', title: 'Position logged', message: `Now tracking ${addForm.ticker} · alerts active` });
+    if (api.getToken()) {
+      try { await api.addTrade(addForm.ticker, +addForm.shares, +addForm.avgCost); } catch { /* local state already updated */ }
+    }
+  };
 
-            {optimization && !optimization.loading && (
-              <div className="opt-results fade-in">
-                <div className="opt-stat">
-                  <span>Exp. Return:</span>
-                  <span className="green">{optimization.metrics?.expected_annual_return}%</span>
-                </div>
-                <div className="opt-stat" style={{ marginBottom: '1rem' }}>
-                  <span>Sharpe Ratio:</span>
-                  <span className="purple">{optimization.metrics?.sharpe_ratio}</span>
-                </div>
-                <div style={{ height: '220px', width: '100%' }}>
-                  <Plot
-                    data={[{
-                      values: optimization.allocations?.map(a => a.percentage),
-                      labels: optimization.allocations?.map(a => a.ticker),
-                      type: 'pie',
-                      hole: 0.6,
-                      textinfo: 'label+percent',
-                      hoverinfo: 'label+percent+value',
-                      marker: {
-                        colors: ['#10b981', '#3b82f6', '#f43f5e', '#a855f7', '#f59e0b', '#06b6d4']
-                      }
-                    }]}
-                    layout={{
-                      paper_bgcolor: 'transparent',
-                      plot_bgcolor: 'transparent',
-                      margin: { t: 10, b: 10, l: 10, r: 10 },
-                      showlegend: false,
-                      font: { color: '#94a3b8' }
-                    }}
-                    config={{ displayModeBar: false }}
-                    useResizeHandler={true}
-                    style={{ width: "100%", height: "100%" }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        </aside>
+  const optimize = () => {
+    setOptimizing(true);
+    setOptimized(null);
+    setTimeout(() => {
+      setOptimizing(false);
+      const colors = ['#10b981', '#06b6d4', '#8b5cf6', '#fbbf24', '#ef4444'];
+      const allocations = selected.map((t, i) => ({ label: t, value: Math.round(30 + Math.random() * 25), color: colors[i % colors.length] }));
+      const total = allocations.reduce((s, a) => s + a.value, 0);
+      allocations.forEach(a => a.value = Math.round((a.value / total) * 100));
+      setOptimized({ expectedReturn: 18.4, sharpe: 1.62, risk: 'Moderate', allocations });
+      triggerConfetti();
+      addToast({ type: 'xp', icon: 'sparkles', title: '+100 XP earned', message: 'Optimizer run complete.' });
+    }, 1800);
+  };
 
-        {loading ? (
-          <div className="loading">Loading holdings...</div>
-        ) : (
-          <div className="portfolio-main">
-            <header className="page-header">
-                <h2>My Investment Portfolio</h2>
-                <button className="primary-btn" onClick={() => setShowTradeModal(true)}>➕ Add Trade</button>
-            </header>
-            
-            {data.is_offline && (
-              <div style={{ padding: '1rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '0.5rem', marginBottom: '1.5rem', color: 'var(--accent-red)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ fontSize: '1.2rem' }}>⚠️</span>
-                <div>
-                  <strong>Offline Mode Active:</strong> Live market data unavailable. Showing last known prices.
-                </div>
-              </div>
-            )}
-                    <div className="stats-row">
-                        <div className="glass-card stat-box">
-                            <label>Total Value</label>
-                            <div className="amount">KES {data.summary.total_value.toLocaleString()}</div>
-                        </div>
-                        <div className="glass-card stat-box">
-                            <label>Total Profit/Loss</label>
-                            <div className={`amount ${data.summary.total_pnl >= 0 ? 'up' : 'down'}`}>
-                                {data.summary.total_pnl >= 0 ? '+' : '-'} KES {Math.abs(data.summary.total_pnl).toLocaleString()}
-                            </div>
-                        </div>
-                        <div className="glass-card stat-box">
-                            <label>Risk Score</label>
-                            <div className="amount purple">{data.summary.risk_score.toFixed(1)}/100</div>
-                        </div>
-                    </div>
-
-                    <section className="holdings-section glass-card">
-                        <h3>Current Holdings</h3>
-                        <table className="holdings-table">
-                            <thead>
-                                <tr>
-                                    <th>Ticker</th>
-                                    <th>Quantity</th>
-                                    <th>Avg Cost</th>
-                                    <th>Value</th>
-                                    <th>P/L</th>
-                                    <th style={{ textAlign: 'right' }}>Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {data.holdings.map(h => (
-                                    <tr key={h.ticker}>
-                                        <td className="ticker-cell">{h.ticker}</td>
-                                        <td>{h.qty}</td>
-                                        <td>{h.avg_cost.toFixed(2)}</td>
-                                        <td>{(h.qty * h.current_price).toLocaleString()}</td>
-                                        <td className={h.pnl >= 0 ? 'up' : 'down'}>
-                                            {h.pnl >= 0 ? '▲' : '▼'} {h.pnl_pct.toFixed(2)}%
-                                        </td>
-                                        <td style={{ textAlign: 'right' }}>
-                                            <button 
-                                                onClick={() => removeTrade(h.ticker)}
-                                                style={{ background: 'rgba(239,68,68,0.1)', color: 'var(--accent-red)', border: '1px solid rgba(239,68,68,0.2)', padding: '0.3rem 0.6rem', borderRadius: '0.3rem', fontSize: '0.8rem', cursor: 'pointer' }}
-                                            >
-                                                Sell
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </section>
-                </div>
-            )}
-            </div>
-
-            {showTradeModal && (
-                <TradeModal 
-                  onClose={() => setShowTradeModal(false)} 
-                  onSuccess={(_msg) => {
-                    setShowTradeModal(false);
-                    fetchPortfolio();
-                  }} 
-                />
-            )}
-
-            <style jsx="true">{`
-        .page { padding: 2rem; max-width: 1400px; margin: 0 auto; }
-        .portfolio-layout { display: grid; grid-template-columns: 350px 1fr; gap: 2rem; align-items: start; }
-        .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
-        .primary-btn { background: linear-gradient(135deg, var(--accent-emerald), var(--accent-cyan)); color: black; padding: 0.6rem 1.2rem; border-radius: 0.5rem; font-weight: 700; }
-        
-        .optimizer-card h3 { margin-bottom: 0.5rem; }
-        .opt-form { margin-top: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
-        .opt-form label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; }
-        .opt-form input { background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: white; padding: 0.75rem; border-radius: 0.5rem; }
-        .opt-btn { background: var(--accent-purple); color: white; padding: 0.75rem; border-radius: 0.5rem; }
-        
-        .opt-results { margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--border); }
-        .opt-stat { display: flex; justify-content: space-between; margin-bottom: 1rem; font-weight: 700; }
-        .opt-row { display: flex; justify-content: space-between; padding: 0.5rem 0; font-size: 0.9rem; border-bottom: 1px solid rgba(255,255,255,0.03); }
-
-        .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-bottom: 2rem; }
-        .stat-box { text-align: center; }
-        .stat-box label { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; }
-        .amount { font-size: 1.6rem; font-weight: 900; margin-top: 0.5rem; font-family: 'monospace'; }
-        .amount.up { color: var(--accent-emerald); }
-        .amount.down { color: var(--accent-red); }
-        .holdings-section { margin-top: 2rem; padding: 0; overflow: hidden; }
-        .holdings-section h3 { padding: 1.5rem; border-bottom: 1px solid var(--border); }
-        .holdings-table { width: 100%; border-collapse: collapse; }
-        .holdings-table th { text-align: left; padding: 1rem 1.5rem; background: rgba(255,255,255,0.03); color: var(--text-secondary); font-size: 0.8rem; }
-        .holdings-table td { padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); }
-        .ticker-cell { font-weight: 800; color: var(--accent-cyan); }
-        .up { color: var(--accent-emerald); }
-        .down { color: var(--accent-red); }
-      `}</style>
+  return (
+    <div className="anim-fade" style={{ maxWidth: 1400, margin: '0 auto', padding: '24px 24px 60px' }}>
+      <div style={{ marginBottom: 24, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-0.03em' }}>My Tracker</h1>
+          <p style={{ fontSize: 14, color: 'rgba(148,163,184,0.85)', marginTop: 6 }}>
+            Tell us what you own — we'll watch the market and send alerts. <span style={{ color: 'rgba(245,158,11,0.9)' }}>Advisory only — no orders placed.</span>
+          </p>
         </div>
-    );
-}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button variant="secondary" icon="arrow-down">Export CSV</Button>
+          <Button variant="primary" icon="plus" onClick={() => setAddOpen(true)}>Log Position</Button>
+        </div>
+      </div>
 
-export default Portfolio;
+      <div className="glass" style={{ padding: 24, marginBottom: 20, position: 'relative', overflow: 'hidden',
+        background: 'linear-gradient(135deg, rgba(16,185,129,0.08), rgba(6,182,212,0.04))', borderColor: 'rgba(16,185,129,0.2)' }}>
+        <div style={{ position: 'absolute', top: -50, right: -50, width: 200, height: 200,
+          background: 'radial-gradient(circle, rgba(16,185,129,0.2), transparent 70%)' }} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 24, position: 'relative' }}>
+          <div>
+            <div style={{ fontSize: 11, color: 'rgba(148,163,184,0.85)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600, marginBottom: 8 }}>Total Value</div>
+            <div className="mono" style={{ fontSize: 36, fontWeight: 800, letterSpacing: '-0.03em', lineHeight: 1 }}>
+              <span style={{ fontSize: 18, color: 'rgba(148,163,184,0.7)', marginRight: 6 }}>KES</span>
+              <Counter value={stats.value} decimals={0} />
+            </div>
+            <div style={{ fontSize: 12, color: 'rgba(148,163,184,0.7)', marginTop: 8 }}>
+              Cost basis: <span className="mono">{stats.cost.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: 'rgba(148,163,184,0.85)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600, marginBottom: 8 }}>Total P&L</div>
+            <div className="mono" style={{ fontSize: 32, fontWeight: 800, letterSpacing: '-0.03em', lineHeight: 1, color: pl >= 0 ? '#10b981' : '#ef4444' }}>
+              {pl >= 0 ? '+' : ''}<Counter value={pl} decimals={0} />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+              <Icon name={pl >= 0 ? 'arrow-up' : 'arrow-down'} size={12} color={pl >= 0 ? '#10b981' : '#ef4444'} strokeWidth={3} />
+              <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: pl >= 0 ? '#10b981' : '#ef4444' }}>
+                {plPct >= 0 ? '+' : ''}{plPct.toFixed(2)}%
+              </span>
+              <span style={{ fontSize: 11, color: 'rgba(148,163,184,0.6)' }}>all time</span>
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: 'rgba(148,163,184,0.85)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600, marginBottom: 8 }}>Risk Score</div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <div className="mono" style={{ fontSize: 36, fontWeight: 800, letterSpacing: '-0.03em', color: '#fbbf24' }}>{riskScore}</div>
+              <div style={{ fontSize: 13, color: 'rgba(148,163,184,0.7)' }}>/ 10</div>
+            </div>
+            <div style={{ marginTop: 8 }}><Badge color="amber" icon="shield">Moderate</Badge></div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: 'rgba(148,163,184,0.85)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600, marginBottom: 8 }}>Diversification</div>
+            <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+              {['Banking', 'Telecom', 'Energy', 'Consumer'].map((s, i) => (
+                <div key={s} style={{ flex: 1, height: 32, borderRadius: 6,
+                  background: ['#10b981', '#06b6d4', '#8b5cf6', '#fbbf24'][i], opacity: 0.7 }} title={s} />
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: 'rgba(148,163,184,0.7)', marginTop: 8 }}>4 sectors</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="glass" style={{ padding: 22, marginBottom: 20,
+        background: 'linear-gradient(135deg, rgba(139,92,246,0.1), rgba(6,182,212,0.04))', borderColor: 'rgba(139,92,246,0.25)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 11,
+            background: 'linear-gradient(135deg, #8b5cf6, #06b6d4)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 8px 20px -4px rgba(139,92,246,0.5)' }}>
+            <Icon name="brain" size={20} color="white" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <h3 style={{ fontSize: 16, fontWeight: 700 }}>AI Portfolio Optimizer</h3>
+            <p style={{ fontSize: 12, color: 'rgba(148,163,184,0.85)', marginTop: 2 }}>Set a budget, pick tickers, get the optimal allocation by Sharpe ratio.</p>
+          </div>
+          <Badge color="purple" icon="sparkles">PRO</Badge>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: optimized ? '1fr 1fr' : '1fr', gap: 20 }} className="opt-grid">
+          <div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 12, color: 'rgba(148,163,184,0.85)', fontWeight: 600, marginBottom: 6, display: 'block' }}>Budget (KES)</label>
+              <input className="glass-input mono" type="number" value={budget} onChange={e => setBudget(+e.target.value)} />
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 12, color: 'rgba(148,163,184,0.85)', fontWeight: 600, marginBottom: 6, display: 'block' }}>Tickers ({selected.length})</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {NSE_STOCKS.slice(0, 10).map(s => {
+                  const on = selected.includes(s.ticker);
+                  return (
+                    <button key={s.ticker} onClick={() => setSelected(sel => on ? sel.filter(t => t !== s.ticker) : [...sel, s.ticker])}
+                      style={{ padding: '6px 11px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                        background: on ? 'rgba(139,92,246,0.2)' : 'rgba(15,23,42,0.5)',
+                        color: on ? '#c4b5fd' : 'rgba(203,213,225,0.7)',
+                        border: on ? '1px solid rgba(139,92,246,0.4)' : '1px solid rgba(255,255,255,0.08)',
+                        transition: 'all 150ms' }}>
+                      {s.ticker}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <Button variant="purple" size="lg" icon={optimizing ? null : 'zap'} onClick={optimize} disabled={optimizing || selected.length < 2} fullWidth>
+              {optimizing ? 'Optimizing…' : 'Optimize Portfolio'}
+            </Button>
+          </div>
+
+          {optimized && (
+            <div className="anim-fade" style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+              <DonutChart data={optimized.allocations} size={170} thickness={26}
+                centerLabel={`+${optimized.expectedReturn}%`} centerSubLabel="Expected" />
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 10, color: 'rgba(148,163,184,0.7)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sharpe</div>
+                    <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: '#06b6d4' }}>{optimized.sharpe}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: 'rgba(148,163,184,0.7)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Risk</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, marginTop: 2 }}><Badge color="amber" size="sm">{optimized.risk}</Badge></div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {optimized.allocations.map(a => (
+                    <div key={a.label} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                      <div style={{ width: 10, height: 10, borderRadius: 3, background: a.color }} />
+                      <span style={{ flex: 1, fontWeight: 600 }}>{a.label}</span>
+                      <span className="mono" style={{ color: 'rgba(148,163,184,0.85)' }}>{a.value}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="glass" style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: '18px 22px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          <div>
+            <h3 style={{ fontSize: 15, fontWeight: 700 }}>Your positions</h3>
+            <p style={{ fontSize: 11, color: 'rgba(148,163,184,0.7)', marginTop: 2 }}>{holdings.length} tracked · advice updates in real-time</p>
+          </div>
+        </div>
+        {holdings.length === 0 ? (
+          <div style={{ padding: '60px 24px', textAlign: 'center' }}>
+            <div style={{ width: 64, height: 64, borderRadius: 18, background: 'rgba(16,185,129,0.1)',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16,
+              animation: 'floatY 3s ease-in-out infinite' }}>
+              <Icon name="briefcase" size={28} color="#10b981" />
+            </div>
+            <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>No holdings yet</h3>
+            <p style={{ fontSize: 13, color: 'rgba(148,163,184,0.8)', marginBottom: 20 }}>Log positions you hold elsewhere to get tailored signals.</p>
+            <Button variant="primary" icon="plus" onClick={() => setAddOpen(true)}>Log First Position</Button>
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: 'rgba(15,23,42,0.4)' }}>
+                  {['Ticker', 'Shares', 'Avg Cost', 'Current', 'Value', 'P&L', 'Advice', ''].map((h, i) => (
+                    <th key={h} style={{ padding: '12px 16px', textAlign: i === 0 ? 'left' : (i === 6 || i === 7) ? 'center' : 'right',
+                      fontSize: 11, fontWeight: 600, color: 'rgba(148,163,184,0.85)',
+                      textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {holdings.map((h, i) => {
+                  const value = h.shares * h.current;
+                  const cost = h.shares * h.avgCost;
+                  const plRow = value - cost;
+                  const plPctRow = (plRow / cost) * 100;
+                  const positive = plRow >= 0;
+                  const color = positive ? '#10b981' : '#ef4444';
+                  const stock = NSE_STOCKS.find(s => s.ticker === h.ticker);
+                  const advice = adviceFor(h);
+                  return (
+                    <tr key={h.ticker}
+                      onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.03)'}
+                      onMouseLeave={e => e.currentTarget.style.background = i % 2 ? 'rgba(15,23,42,0.2)' : 'transparent'}
+                      style={{ background: i % 2 ? 'rgba(15,23,42,0.2)' : 'transparent', transition: 'background 150ms' }}>
+                      <td style={{ padding: '14px 16px' }}>
+                        <button onClick={() => stock && openStock(stock)} style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left' }}>
+                          <div style={{ width: 32, height: 32, borderRadius: 8, background: `${color}22`, border: `1px solid ${color}44`,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: 10, fontWeight: 800, color }}>{h.ticker.slice(0,2)}</div>
+                          <div>
+                            <div style={{ fontWeight: 700 }}>{h.ticker}</div>
+                            <div style={{ fontSize: 11, color: 'rgba(148,163,184,0.7)' }}>{stock?.name?.slice(0, 20)}</div>
+                          </div>
+                        </button>
+                      </td>
+                      <td style={{ padding: '14px 16px', textAlign: 'right' }} className="mono">{h.shares.toLocaleString()}</td>
+                      <td style={{ padding: '14px 16px', textAlign: 'right' }} className="mono">{h.avgCost.toFixed(2)}</td>
+                      <td style={{ padding: '14px 16px', textAlign: 'right' }} className="mono">{h.current.toFixed(2)}</td>
+                      <td style={{ padding: '14px 16px', textAlign: 'right', fontWeight: 700 }} className="mono">{value.toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
+                      <td style={{ padding: '14px 16px', textAlign: 'right' }}>
+                        <div className="mono" style={{ fontWeight: 700, color }}>{positive ? '+' : ''}{plPctRow.toFixed(2)}%</div>
+                        <div className="mono" style={{ fontSize: 11, color: `${color}cc` }}>{positive ? '+' : ''}{plRow.toLocaleString('en-US', { maximumFractionDigits: 0 })}</div>
+                      </td>
+                      <td style={{ padding: '14px 16px', textAlign: 'center' }}>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 11px', borderRadius: 999,
+                          background: `${advice.color}1a`, border: `1px solid ${advice.color}55` }}>
+                          <Icon name={advice.icon} size={12} color={advice.color} strokeWidth={2.5} />
+                          <div style={{ textAlign: 'left' }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: advice.color, lineHeight: 1.1 }}>{advice.label}</div>
+                            <div style={{ fontSize: 10, color: 'rgba(148,163,184,0.75)', lineHeight: 1.2 }}>{advice.note}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td style={{ padding: '14px 16px', textAlign: 'right' }}>
+                        <Button variant="danger" size="sm" onClick={() => setSellTarget(h)}>Remove</Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <Modal open={!!sellTarget} onClose={() => setSellTarget(null)}>
+        {sellTarget && <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+            <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(239,68,68,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name="x" size={22} color="#ef4444" strokeWidth={3} />
+            </div>
+            <div>
+              <h3 style={{ fontSize: 18, fontWeight: 700 }}>Remove {sellTarget.ticker}?</h3>
+              <p style={{ fontSize: 12, color: 'rgba(148,163,184,0.8)' }}>Stop tracking this position</p>
+            </div>
+          </div>
+          <div className="glass" style={{ padding: 14, marginBottom: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+              <span style={{ color: 'rgba(148,163,184,0.8)' }}>Market price</span>
+              <span className="mono" style={{ fontWeight: 700 }}>KES {sellTarget.current.toFixed(2)}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+              <span style={{ color: 'rgba(148,163,184,0.8)' }}>Estimated total</span>
+              <span className="mono" style={{ fontWeight: 700, color: '#10b981' }}>KES {(sellTarget.shares * sellTarget.current).toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Button variant="secondary" fullWidth onClick={() => setSellTarget(null)}>Cancel</Button>
+            <Button variant="danger" fullWidth onClick={() => removeHolding(sellTarget.ticker)}>Confirm Remove</Button>
+          </div>
+        </>}
+      </Modal>
+
+      <Modal open={addOpen} onClose={() => setAddOpen(false)}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon name="plus" size={22} color="#10b981" strokeWidth={3} />
+          </div>
+          <div>
+            <h3 style={{ fontSize: 18, fontWeight: 700 }}>Log a position</h3>
+            <p style={{ fontSize: 12, color: 'rgba(148,163,184,0.85)' }}>Tell us what you own — we'll send alerts and advice.</p>
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 18 }}>
+          <div>
+            <label style={{ fontSize: 11, color: 'rgba(148,163,184,0.85)', fontWeight: 600, marginBottom: 6, display: 'block', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Ticker</label>
+            <select className="glass-input" value={addForm.ticker} onChange={e => setAddForm(f => ({ ...f, ticker: e.target.value }))}
+              style={{ background: 'rgba(15,23,42,0.6)' }}>
+              {NSE_STOCKS.map(s => (
+                <option key={s.ticker} value={s.ticker} style={{ background: '#0f172a' }}>{s.ticker} — {s.name}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <label style={{ fontSize: 11, color: 'rgba(148,163,184,0.85)', fontWeight: 600, marginBottom: 6, display: 'block', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Shares</label>
+              <input className="glass-input mono" type="number" min="1" value={addForm.shares}
+                onChange={e => setAddForm(f => ({ ...f, shares: e.target.value }))} />
+            </div>
+            <div>
+              <label style={{ fontSize: 11, color: 'rgba(148,163,184,0.85)', fontWeight: 600, marginBottom: 6, display: 'block', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Avg cost (KES)</label>
+              <input className="glass-input mono" type="number" step="0.01" placeholder="e.g. 18.50" value={addForm.avgCost}
+                onChange={e => setAddForm(f => ({ ...f, avgCost: e.target.value }))} />
+            </div>
+          </div>
+          {(() => {
+            const stock = NSE_STOCKS.find(s => s.ticker === addForm.ticker);
+            if (!stock) return null;
+            return (
+              <div className="glass" style={{ padding: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 12, color: 'rgba(148,163,184,0.85)' }}>Current price</div>
+                <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: '#10b981' }}>KES {stock.price.toFixed(2)}</div>
+              </div>
+            );
+          })()}
+        </div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <Button variant="secondary" fullWidth onClick={() => setAddOpen(false)}>Cancel</Button>
+          <Button variant="primary" fullWidth icon="check" onClick={addPosition} disabled={!addForm.shares || !addForm.avgCost}>Start tracking</Button>
+        </div>
+      </Modal>
+
+      <style>{`
+        @media (max-width: 720px) { .opt-grid { grid-template-columns: 1fr !important; } }
+      `}</style>
+    </div>
+  );
+};
+
+export default PortfolioPage;

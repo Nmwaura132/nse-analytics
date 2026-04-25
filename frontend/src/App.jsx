@@ -1,27 +1,75 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { useState } from 'react';
-import Navbar from './components/Navbar';
-import Dashboard from './pages/Dashboard';
-import Portfolio from './pages/Portfolio';
-import DataScience from './pages/DataScience';
+import React from 'react';
+import { USER } from './data.js';
+import { Navbar, Toast, Confetti } from './ui.jsx';
+import LoginPage from './pages/Login.jsx';
+import DashboardPage, { StockDrawer } from './pages/Dashboard.jsx';
+import PortfolioPage from './pages/Portfolio.jsx';
+import AnalyticsPage from './pages/Analytics.jsx';
+import AccountPage from './pages/Account.jsx';
+import NewsPage from './pages/News.jsx';
+import { getToken, logout as apiLogout } from './api.js';
 
 function App() {
-    const [searchQuery, setSearchQuery] = useState("");
+  const [page, setPage] = React.useState(() => getToken() ? 'dashboard' : 'login');
+  const [selectedStock, setSelectedStock] = React.useState(null);
+  const [confetti, setConfetti] = React.useState(false);
+  const [toast, setToast] = React.useState(null);
+  const [tier, setTier] = React.useState('free');
+  const [quota, setQuota] = React.useState({ used: 0, total: 10 });
 
+  React.useEffect(() => {
+    document.body.dataset.tier = tier;
+  }, [tier]);
+
+  const triggerConfetti = () => {
+    setConfetti(true);
+    setTimeout(() => setConfetti(false), 3500);
+  };
+
+  const addToast = (t) => setToast(t);
+
+  const handleLogin = (authData = {}) => {
+    if (authData.tier) setTier(authData.tier);
+    setPage('dashboard');
+    const firstName = USER.name.split(' ')[0];
+    setTimeout(() => {
+      setToast({ type: 'success', icon: 'check', title: `Welcome back, ${firstName}!`, message: '+10 XP for daily login · streak +1 day' });
+    }, 600);
+  };
+
+  const handleLogout = () => {
+    apiLogout();
+    setPage('login');
+  };
+
+  const openStock = (s) => setSelectedStock(s);
+
+  if (page === 'login') {
     return (
-        <Router>
-            <div className="app-container">
-                <Navbar searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
-                <main className="content">
-                    <Routes>
-                        <Route path="/" element={<Dashboard searchQuery={searchQuery} />} />
-                        <Route path="/portfolio" element={<Portfolio />} />
-                        <Route path="/datascience" element={<DataScience />} />
-                    </Routes>
-                </main>
-            </div>
-        </Router>
+      <>
+        <LoginPage onLogin={handleLogin} />
+        {confetti && <Confetti />}
+        <Toast toast={toast} onDismiss={() => setToast(null)} />
+      </>
     );
+  }
+
+  return (
+    <>
+      <Navbar page={page} setPage={setPage} onLogout={handleLogout} user={USER} quota={quota} tier={tier} />
+      <div key={page} className="anim-fade">
+        {page === 'dashboard' && <DashboardPage user={USER} tier={tier} openStock={openStock} />}
+        {page === 'portfolio' && <PortfolioPage user={USER} openStock={openStock} addToast={addToast} triggerConfetti={triggerConfetti} />}
+        {page === 'analytics' && <AnalyticsPage tier={tier} addToast={addToast} triggerConfetti={triggerConfetti} />}
+        {page === 'news' && <NewsPage openStock={openStock} />}
+        {page === 'account' && <AccountPage user={USER} tier={tier} setTier={setTier} addToast={addToast} triggerConfetti={triggerConfetti} />}
+      </div>
+
+      <StockDrawer stock={selectedStock} onClose={() => setSelectedStock(null)} />
+      {confetti && <Confetti />}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
+    </>
+  );
 }
 
 export default App;

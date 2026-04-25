@@ -113,8 +113,10 @@ class RefreshDataView(APIView):
 
 class PortfolioListView(APIView):
     """Get portfolio holdings and performance summary."""
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        user_id = request.query_params.get('user_id', '1')
+        user_id = str(request.user.id)
         trades = Trade.objects.filter(user_id=user_id)
         
         market = MarketService.get_data()
@@ -156,14 +158,16 @@ class PortfolioListView(APIView):
 
 class AddTradeView(APIView):
     """Add or update a trade in the portfolio."""
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         serializer = TradeSerializer(data=request.data)
         if serializer.is_valid():
             ticker = serializer.validated_data['ticker']
-            user_id = serializer.validated_data.get('user_id', '1')
+            user_id = str(request.user.id)
             qty = serializer.validated_data['qty']
             price = serializer.validated_data['avg_cost']
-            
+
             trade, created = Trade.objects.get_or_create(user_id=user_id, ticker=ticker)
             if created:
                 trade.qty = qty
@@ -178,9 +182,11 @@ class AddTradeView(APIView):
 
 class RemoveTradeView(APIView):
     """Remove a stock from the portfolio."""
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         ticker = request.data.get('ticker')
-        user_id = request.data.get('user_id', '1')
+        user_id = str(request.user.id)
         Trade.objects.filter(user_id=user_id, ticker=ticker).delete()
         return Response({'success': True, 'message': 'Ticker removed'})
 
