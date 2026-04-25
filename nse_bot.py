@@ -1222,6 +1222,12 @@ async def dividends_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============ SUBSCRIPTION / PLAN ============
 
 BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:8000/api')
+TELEGRAM_BOT_SECRET = os.getenv('TELEGRAM_BOT_SECRET', '')
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', '')
+
+def _bot_secret_headers() -> dict:
+    """Headers that authenticate this bot to the Django backend."""
+    return {'X-Bot-Secret': TELEGRAM_BOT_SECRET} if TELEGRAM_BOT_SECRET else {}
 
 
 async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1309,6 +1315,7 @@ async def _get_user_tier(telegram_id: str, first_name: str = "") -> str:
         r = req.post(
             f"{BACKEND_URL}/auth/telegram-login",
             json={"telegram_id": telegram_id, "first_name": first_name},
+            headers=_bot_secret_headers(),
             timeout=8,
         )
         if r.status_code in (200, 201):
@@ -1534,6 +1541,7 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         r = req.post(
             f"{BACKEND_URL}/auth/telegram-login",
             json={"telegram_id": telegram_id, "first_name": first_name},
+            headers=_bot_secret_headers(),
             timeout=10,
         )
         if r.status_code not in (200, 201):
@@ -1619,6 +1627,7 @@ async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         r = req.post(
             f"{BACKEND_URL}/auth/telegram-login",
             json={"telegram_id": telegram_id, "first_name": first_name},
+            headers=_bot_secret_headers(),
             timeout=10,
         )
         if r.status_code not in (200, 201):
