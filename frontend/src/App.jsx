@@ -17,8 +17,11 @@ function App() {
   const [tier, setTier] = React.useState('free');
   const [quota, setQuota] = React.useState({ used: 0, total: 10 });
 
+  const QUOTA_TOTALS = { free: 10, pro: 50, club: 100 };
+
   React.useEffect(() => {
     document.body.dataset.tier = tier;
+    setQuota(q => ({ ...q, total: QUOTA_TOTALS[tier] ?? 10 }));
   }, [tier]);
 
   const triggerConfetti = () => {
@@ -31,6 +34,7 @@ function App() {
   const handleLogin = (authData = {}) => {
     if (authData.tier) setTier(authData.tier);
     setPage('dashboard');
+    setQuota(q => ({ ...q, total: QUOTA_TOTALS[authData.tier] ?? q.total }));
     const firstName = USER.name.split(' ')[0];
     setTimeout(() => {
       setToast({ type: 'success', icon: 'check', title: `Welcome back, ${firstName}!`, message: '+10 XP for daily login · streak +1 day' });

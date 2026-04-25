@@ -1,8 +1,8 @@
 import React from 'react';
-import { NSE_STOCKS, NOTIFICATIONS, generateCandles, generateSparkline } from '../data.js';
+import { NSE_STOCKS, NOTIFICATIONS, generateSparkline } from '../data.js';
 import { Icon } from '../icons.jsx';
 import { Badge, Button, Modal } from '../ui.jsx';
-import { Sparkline, CandlestickChart, Counter } from '../charts.jsx';
+import { Sparkline, Counter } from '../charts.jsx';
 import { fetchStocks } from '../api.js';
 
 const StockCard = ({ stock, onClick, sparklineSeed = 1 }) => {

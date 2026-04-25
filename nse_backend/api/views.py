@@ -1,12 +1,17 @@
 import time
 from datetime import datetime, timedelta
+import re
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
@@ -23,9 +28,33 @@ from .services import MarketService
 from .mpesa import stk_push, TIER_PRICES, topup_stk_push, TOPUP_PACKAGES
 from .permissions import IsPro
 
-SUPERUSER_IDS = {'5649100063'}
+SUPERUSER_IDS = set(filter(None, os.getenv('SUPERUSER_TELEGRAM_IDS', '').split(',')))
 TIER_LIMITS = {'free': 10, 'pro': 50, 'club': 100}
-ADMIN_TELEGRAM_ID = os.getenv('ADMIN_TELEGRAM_ID', '5649100063')
+ADMIN_TELEGRAM_ID = os.getenv('ADMIN_TELEGRAM_ID', '')
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', '')
+TELEGRAM_BOT_SECRET = os.getenv('TELEGRAM_BOT_SECRET', '')
+
+
+_PHONE_RE = re.compile(r'^(?:0|\+?254)(7\d{8}|1\d{8})$')
+
+def _validate_phone(phone: str) -> str:
+    """Normalise and validate a Kenyan phone number. Returns 254XXXXXXXXX format or raises ValueError."""
+    phone = re.sub(r'[\s\-]', '', phone)
+    if not _PHONE_RE.match(phone):
+        raise ValueError('Invalid phone number. Use format: 07XXXXXXXX or 254XXXXXXXXX')
+    digits = re.sub(r'\D', '', phone)
+    if digits.startswith('0'):
+        digits = '254' + digits[1:]
+    elif digits.startswith('254'):
+        pass
+    else:
+        digits = '254' + digits
+    return digits
+
+
+class AuthRateThrottle(AnonRateThrottle):
+    """Tight throttle applied to login / register / telegram-login endpoints."""
+    scope = 'auth'
 
 
 def notify_admin(message: str) -> None:
@@ -106,7 +135,9 @@ class StockDetailView(APIView):
         return Response(MarketService.sanitize_json(data))
 
 class RefreshDataView(APIView):
-    """Force refresh market data."""
+    """Force refresh market data. Admin only — prevents abuse of expensive operation."""
+    permission_classes = [IsAdminUser]
+
     def post(self, request):
         MarketService.refresh_data()
         return Response({'status': 'ok', 'message': 'Market data refreshed'})
@@ -192,6 +223,8 @@ class RemoveTradeView(APIView):
 
 class OptimizePortfolioView(APIView):
     """Suggest an optimal portfolio allocation using ML."""
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         budget = float(request.data.get('budget', 100000))
         tickers = request.data.get('tickers', [])
@@ -207,6 +240,8 @@ class OptimizePortfolioView(APIView):
 
 class NotificationView(APIView):
     """Fetch or push market notifications."""
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         return Response(notifications_queue[::-1])
         
@@ -227,6 +262,8 @@ class NotificationView(APIView):
 
 # Data Science Endpoints
 class BacktestView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, ticker):
         strategy = request.query_params.get('strategy', 'MACD').upper()
         capital = float(request.query_params.get('initial_capital', 100000))
@@ -241,6 +278,8 @@ class BacktestView(APIView):
         return Response(MarketService.sanitize_json(results))
 
 class PredictionView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, ticker):
         cache = MarketService.get_data()
         current_price = next((s.price for s in cache['stocks'] if s.ticker.upper() == ticker.upper()), 100.0)
@@ -251,6 +290,8 @@ class PredictionView(APIView):
         return Response(MarketService.sanitize_json({'trend': trend, 'price_forecast': forecast}))
 
 class HistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, ticker):
         cache = MarketService.get_data()
         current_price = next((s.price for s in cache['stocks'] if s.ticker.upper() == ticker.upper()), 100.0)
@@ -271,6 +312,7 @@ class HistoryView(APIView):
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         email = request.data.get('email', '').strip().lower()
@@ -279,6 +321,18 @@ class RegisterView(APIView):
 
         if not email or not password:
             return Response({'error': 'Email and password required'}, status=400)
+
+        try:
+            validate_email(email)
+        except DjangoValidationError:
+            return Response({'error': 'Enter a valid email address'}, status=400)
+
+        from django.contrib.auth.password_validation import validate_password
+        try:
+            validate_password(password)
+        except DjangoValidationError as e:
+            return Response({'error': ' '.join(e.messages)}, status=400)
+
         if User.objects.filter(username=email).exists():
             return Response({'error': 'Account already exists'}, status=400)
 
@@ -295,6 +349,7 @@ class RegisterView(APIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         email = request.data.get('email', '').strip().lower()
@@ -314,14 +369,25 @@ class LoginView(APIView):
 
 
 class TelegramLoginView(APIView):
-    """Passwordless login for Telegram users by telegram_id. Auto-creates account on first use."""
+    """Passwordless login for Telegram users by telegram_id. Auto-creates account on first use.
+    Caller must supply the shared TELEGRAM_BOT_SECRET in the X-Bot-Secret header (or body field bot_secret).
+    """
     permission_classes = [AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
+        if TELEGRAM_BOT_SECRET:
+            supplied = (
+                request.headers.get('X-Bot-Secret')
+                or str(request.data.get('bot_secret', ''))
+            )
+            if supplied != TELEGRAM_BOT_SECRET:
+                return Response({'error': 'Unauthorized'}, status=401)
+
         telegram_id = str(request.data.get('telegram_id', ''))
-        first_name = str(request.data.get('first_name', ''))
-        if not telegram_id:
-            return Response({'error': 'telegram_id required'}, status=400)
+        first_name = str(request.data.get('first_name', ''))[:64]
+        if not telegram_id or not telegram_id.isdigit():
+            return Response({'error': 'telegram_id must be a numeric string'}, status=400)
         try:
             profile = UserProfile.objects.select_related('user').get(telegram_id=telegram_id)
         except UserProfile.DoesNotExist:
@@ -390,6 +456,10 @@ class SubscribeInitiateView(APIView):
             phone = profile.mpesa_phone or ''
         if not phone:
             return Response({'error': 'M-Pesa phone number required'}, status=400)
+        try:
+            phone = _validate_phone(phone)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=400)
 
         try:
             result = stk_push(phone, tier, request.user.id)
@@ -527,22 +597,42 @@ class RateLimitConsumeView(APIView):
 # ── Top-Up Endpoints ────────────────────────────────────────────────────────
 
 class TopUpInitiateView(APIView):
-    """POST /api/topup/initiate — Start M-Pesa STK push for a request top-up."""
+    """POST /api/topup/initiate — Start M-Pesa STK push for a request top-up.
+    Accepts both JWT auth (web) and bot_secret header (Telegram bot).
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
-        telegram_id = str(request.data.get('telegram_id', ''))
-        package = request.data.get('package', '')
-        phone = request.data.get('phone', '')
+        # Resolve user: JWT-authenticated web user, or bot calling on behalf of telegram_id
+        if request.user and request.user.is_authenticated:
+            profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        else:
+            if not TELEGRAM_BOT_SECRET:
+                return Response({'error': 'Authentication required'}, status=401)
+            supplied = (
+                request.headers.get('X-Bot-Secret')
+                or str(request.data.get('bot_secret', ''))
+            )
+            if supplied != TELEGRAM_BOT_SECRET:
+                return Response({'error': 'Unauthorized'}, status=401)
+            telegram_id = str(request.data.get('telegram_id', ''))
+            if not telegram_id:
+                return Response({'error': 'telegram_id required'}, status=400)
+            profile = get_object_or_404(UserProfile, telegram_id=telegram_id)
 
-        profile = get_object_or_404(UserProfile, telegram_id=telegram_id)
+        package = request.data.get('package', '')
+        phone = request.data.get('phone', '') or profile.mpesa_phone or ''
+
         pkg = TOPUP_PACKAGES.get(package)
         if not pkg:
             return Response({'error': f'Invalid package. Choose: {list(TOPUP_PACKAGES)}'}, status=400)
 
-        phone = phone or profile.mpesa_phone or ''
         if not phone:
             return Response({'error': 'M-Pesa phone number required'}, status=400)
+        try:
+            phone = _validate_phone(phone)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=400)
 
         try:
             result = topup_stk_push(phone, pkg['price'], profile.user.id)
@@ -603,10 +693,15 @@ class TopUpCallbackView(APIView):
 # ── Admin Notify Endpoint (called by hermes BOOT.md) ───────────────────────
 
 class AdminNotifyView(APIView):
-    """POST /api/admin/notify — Internal webhook for bot events."""
+    """POST /api/admin/notify — Internal webhook for bot events. Requires X-Webhook-Secret header."""
     permission_classes = [AllowAny]
 
     def post(self, request):
+        if WEBHOOK_SECRET:
+            supplied = request.headers.get('X-Webhook-Secret', '')
+            if supplied != WEBHOOK_SECRET:
+                return Response({'error': 'Unauthorized'}, status=401)
+
         event = request.data.get('event', '')
         telegram_id = str(request.data.get('telegram_id', ''))
         if event == 'new_user' and telegram_id:
