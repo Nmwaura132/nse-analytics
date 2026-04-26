@@ -75,42 +75,32 @@ services:
   nse-dashboard:
     build:
       context: .
-      dockerfile: Dockerfile
-    env_file: .env
-    environment:
-      OPENCLAW_API_URL: 'http://openclaw-gateway:18789'
-      HERMES_API_URL: 'http://hermes-agent:8642'
-      DATABASE_URL: 'postgresql://${POSTGRES_USER:-nse_user}:${POSTGRES_PASSWORD}@nse-postgres:5432/${POSTGRES_DB:-nse_db}'
+      dockerfile: Dockerfile.frontend
     networks:
       - default
       - coolify
     ports:
-      - '5001:5001'
-    volumes:
-      - '/opt/nse-pro/ml-models:/app/models'
+      - '5001:80'
     depends_on:
-      postgres:
-        condition: service_healthy
+      nse-api:
+        condition: service_started
     restart: unless-stopped
-    command:
-      - python
-      - dashboard_server.py
     labels:
       - 'traefik.enable=true'
       - 'traefik.http.routers.nse-dashboard.rule=Host(`nse.37.221.93.219.sslip.io`)'
       - 'traefik.http.routers.nse-dashboard.entrypoints=https'
       - 'traefik.http.routers.nse-dashboard.tls=true'
       - 'traefik.http.routers.nse-dashboard.tls.certresolver=letsencrypt'
-      - 'traefik.http.services.nse-dashboard.loadbalancer.server.port=5001'
+      - 'traefik.http.services.nse-dashboard.loadbalancer.server.port=80'
       - 'traefik.http.routers.nse-dashboard-http.rule=Host(`nse.37.221.93.219.sslip.io`)'
       - 'traefik.http.routers.nse-dashboard-http.entrypoints=http'
       - 'traefik.http.routers.nse-dashboard-http.middlewares=redirect-https@docker'
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:5001/health']
+      test: ['CMD', 'wget', '-qO-', 'http://localhost/']
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 10s
 
   nse-api:
     build:
