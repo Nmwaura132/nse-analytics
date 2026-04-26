@@ -51,6 +51,10 @@ export const Icon = ({ name, size = 18, color = 'currentColor', className = '', 
     case 'brain':      return <svg {...props}><path d="M9 4a3 3 0 00-3 3v1a3 3 0 00-2 3 3 3 0 002 3 3 3 0 003 3v0a3 3 0 003-3V7a3 3 0 00-3-3zM15 4a3 3 0 013 3v1a3 3 0 012 3 3 3 0 01-2 3 3 3 0 01-3 3v0a3 3 0 01-3-3V7a3 3 0 013-3z" /></svg>;
     case 'zap':        return <svg {...props}><path d="M13 2L4 14h7l-2 8 9-12h-7z" /></svg>;
     case 'gift':       return <svg {...props}><rect x="3" y="8" width="18" height="13" rx="1" /><path d="M3 12h18M12 8v13M12 8c-2-3-6-3-6 0s3 0 6 0zM12 8c2-3 6-3 6 0s-3 0-6 0z" /></svg>;
+    case 'users':      return <svg {...props}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" /></svg>;
+    case 'coins':      return <svg {...props}><circle cx="8" cy="8" r="5" /><path d="M21 21c0-2.76-2.24-5-5-5s-5 2.24-5 5" /><path d="M21 8c0-2.76-2.24-5-5-5" /><circle cx="16" cy="8" r="5" /></svg>;
+    case 'alert':      return <svg {...props}><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>;
+    case 'refresh':    return <svg {...props}><path d="M23 4v6h-6M1 20v-6h6" /><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></svg>;
     default: return <svg {...props}><circle cx="12" cy="12" r="9" /></svg>;
   }
 };

@@ -13,6 +13,7 @@ from django.contrib.auth import authenticate
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.db.models import Count, Sum
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 import requests as _req
@@ -368,10 +369,11 @@ class LoginView(APIView):
 
         profile, _ = UserProfile.objects.get_or_create(user=user)
         refresh = RefreshToken.for_user(user)
+        tier = 'admin' if user.is_superuser else profile.tier
         return Response({
             'access': str(refresh.access_token),
             'refresh': str(refresh),
-            'tier': profile.tier,
+            'tier': tier,
             'subscription_end': profile.subscription_end,
         })
 
@@ -720,3 +722,138 @@ class AdminNotifyView(APIView):
                 name = 'Anonymous'
             notify_admin(f"👤 New user on @NSEHermesAIbot: <b>{name}</b> (TG: {telegram_id})")
         return Response({'ok': True})
+
+
+# ── Admin Stats Endpoint ────────────────────────────────────────────────────
+
+class AdminStatsView(APIView):
+    """GET /api/admin/stats — Aggregated platform metrics. Django superusers only.
+    Returns NO individual user portfolios, emails, or personal data (Kenya DPA 2019).
+    """
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        now = timezone.now()
+        today = now.date()
+        week_ago = today - timedelta(days=7)
+        month_ago = today - timedelta(days=30)
+
+        # ── Users (aggregated counts only) ────────────────────────────────────
+        total_users = User.objects.count()
+        new_today = User.objects.filter(date_joined__date=today).count()
+        new_this_week = User.objects.filter(date_joined__date__gte=week_ago).count()
+        by_tier = {
+            row['tier']: row['count']
+            for row in UserProfile.objects.values('tier').annotate(count=Count('id'))
+        }
+        telegram_linked = UserProfile.objects.filter(telegram_id__isnull=False).exclude(telegram_id='').count()
+
+        # ── Revenue (operator's own payment records — legitimate to query) ─────
+        active_subs = Subscription.objects.filter(status='active')
+        total_kes = (
+            Subscription.objects.filter(status='active').aggregate(t=Sum('amount'))['t'] or 0
+        ) + (
+            TopUp.objects.filter(status='active').aggregate(t=Sum('amount'))['t'] or 0
+        )
+        this_month_kes = (
+            Subscription.objects.filter(status='active', activated_at__date__gte=month_ago)
+            .aggregate(t=Sum('amount'))['t'] or 0
+        ) + (
+            TopUp.objects.filter(status='active', created_at__date__gte=month_ago)
+            .aggregate(t=Sum('amount'))['t'] or 0
+        )
+        expiring_soon = active_subs.filter(
+            user__profile__subscription_end__lte=now + timedelta(days=7),
+            user__profile__subscription_end__gte=now,
+        ).count()
+
+        # Recent payments: tier + amount + status only (no email/phone — DPA §25)
+        recent_subs = list(
+            Subscription.objects.order_by('-created_at')[:10]
+            .values('tier', 'amount', 'status', 'created_at')
+        )
+        recent_topups = list(
+            TopUp.objects.order_by('-created_at')[:5]
+            .values('requests', 'amount', 'status', 'created_at')
+        )
+        recent_payments = sorted(
+            [{'type': 'subscription', 'tier': r['tier'], 'amount': r['amount'],
+              'status': r['status'], 'date': r['created_at'].date().isoformat()}
+             for r in recent_subs] +
+            [{'type': 'topup', 'tier': f"+{r['requests']} reqs", 'amount': r['amount'],
+              'status': r['status'], 'date': r['created_at'].date().isoformat()}
+             for r in recent_topups],
+            key=lambda x: x['date'], reverse=True
+        )[:10]
+
+        # ── Usage (aggregated only — no per-user breakdown) ───────────────────
+        requests_today = DailyUsage.objects.filter(date=today).aggregate(t=Sum('count'))['t'] or 0
+        requests_this_week = (
+            DailyUsage.objects.filter(date__gte=week_ago).aggregate(t=Sum('count'))['t'] or 0
+        )
+
+        # By tier today: join DailyUsage → UserProfile
+        by_tier_today = {}
+        for row in (
+            DailyUsage.objects.filter(date=today)
+            .values('user__profile__tier')
+            .annotate(total=Sum('count'))
+        ):
+            tier_key = row['user__profile__tier'] or 'free'
+            by_tier_today[tier_key] = row['total']
+
+        # 7-day chart
+        daily_chart = [
+            {'date': row['date'].isoformat(), 'count': row['total']}
+            for row in (
+                DailyUsage.objects.filter(date__gte=week_ago)
+                .values('date')
+                .annotate(total=Sum('count'))
+                .order_by('date')
+            )
+        ]
+
+        # ── System ─────────────────────────────────────────────────────────────
+        db_ok = True
+        try:
+            User.objects.count()
+        except Exception:
+            db_ok = False
+
+        from .services import MarketService
+        try:
+            ms = MarketService()
+            stocks = ms.get_all_stocks()
+            stocks_count = len(stocks) if stocks else 0
+            last_refresh = stocks[0].get('last_updated') if stocks else None
+        except Exception:
+            stocks_count = 0
+            last_refresh = None
+
+        return Response({
+            'users': {
+                'total': total_users,
+                'new_today': new_today,
+                'new_this_week': new_this_week,
+                'by_tier': by_tier,
+                'telegram_linked': telegram_linked,
+            },
+            'revenue': {
+                'total_kes': total_kes,
+                'this_month_kes': this_month_kes,
+                'active_subscriptions': active_subs.count(),
+                'expiring_soon': expiring_soon,
+                'recent_payments': recent_payments,
+            },
+            'usage': {
+                'requests_today': requests_today,
+                'requests_this_week': requests_this_week,
+                'by_tier_today': by_tier_today,
+                'daily_chart': daily_chart,
+            },
+            'system': {
+                'db_ok': db_ok,
+                'stocks_count': stocks_count,
+                'last_refresh': last_refresh,
+            },
+        })

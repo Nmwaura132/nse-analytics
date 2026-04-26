@@ -35,7 +35,7 @@ const tryRefresh = async () => {
   return false;
 };
 
-const apiFetch = async (path, opts = {}) => {
+export const apiFetch = async (path, opts = {}) => {
   const hdrs = { 'Content-Type': 'application/json', ...authHdr(), ...opts.headers };
   const res = await fetch(`${BASE}${path}`, { ...opts, headers: hdrs });
   if (res.status === 401) {

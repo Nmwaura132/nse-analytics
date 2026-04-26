@@ -43,4 +43,7 @@ urlpatterns = [
 
     # Admin events (called by hermes gateway)
     path('admin/notify', views.AdminNotifyView.as_view()),
+
+    # Admin stats (Django superusers only)
+    path('admin/stats', views.AdminStatsView.as_view()),
 ]

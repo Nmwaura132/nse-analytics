@@ -61,7 +61,21 @@ export const Badge = ({ children, color = 'emerald', icon, size = 'md', pulse = 
   );
 };
 
-export const QuotaPill = ({ used, total, label = 'AI requests' }) => {
+export const QuotaPill = ({ used, total, label = 'AI requests', unlimited = false }) => {
+  if (unlimited) {
+    return (
+      <div style={{
+        display: 'inline-flex', alignItems: 'center', gap: 8,
+        padding: '6px 12px 6px 8px',
+        background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.25)',
+        borderRadius: 999, fontSize: 12, fontWeight: 600,
+      }}>
+        <Icon name="shield" size={14} color="#a78bfa" />
+        <span className="mono" style={{ color: '#a78bfa' }}>Unlimited</span>
+        <span style={{ color: 'rgba(148,163,184,0.7)', fontWeight: 500 }}>{label}</span>
+      </div>
+    );
+  }
   const pct = (used / total) * 100;
   const bar = pct >= 90 ? '#ef4444' : pct >= 70 ? '#fbbf24' : '#10b981';
   return (
@@ -88,8 +102,9 @@ export const Navbar = ({ page, setPage, onLogout, user, quota, tier }) => {
     { id: 'portfolio', label: 'Tracker',   icon: 'briefcase' },
     { id: 'analytics', label: 'Analytics', icon: 'chart' },
     { id: 'news',      label: 'News',      icon: 'news' },
+    ...(tier === 'admin' ? [{ id: 'admin', label: 'Admin', icon: 'shield' }] : []),
   ];
-  const tierColor = tier === 'pro' ? 'cyan' : tier === 'club' ? 'purple' : 'slate';
+  const tierColor = tier === 'admin' ? 'purple' : tier === 'pro' ? 'cyan' : tier === 'club' ? 'purple' : 'slate';
   return (
     <nav style={{
       position: 'sticky', top: 0, zIndex: 50,
@@ -128,7 +143,7 @@ export const Navbar = ({ page, setPage, onLogout, user, quota, tier }) => {
         </div>
 
         <div style={{ flex: 1 }} />
-        <QuotaPill used={quota.used} total={quota.total} />
+        <QuotaPill used={quota.used} total={quota.total} unlimited={tier === 'admin'} />
 
         <div className="desktop-nav" style={{
           display: 'inline-flex', alignItems: 'center', gap: 6,

@@ -122,8 +122,8 @@ const AccountPage = ({ user, tier, setTier, addToast, triggerConfetti }) => {
           <div style={{ flex: 1, minWidth: 200 }}>
             <h2 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.02em' }}>{user.name}</h2>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
-              <Badge color={tier === 'club' ? 'purple' : tier === 'pro' ? 'cyan' : 'emerald'} icon={tier === 'club' ? 'crown' : tier === 'pro' ? 'rocket' : 'spark'}>
-                {TIERS.find(t => t.id === tier).name} member
+              <Badge color={tier === 'admin' ? 'purple' : tier === 'club' ? 'purple' : tier === 'pro' ? 'cyan' : 'emerald'} icon={tier === 'admin' ? 'shield' : tier === 'club' ? 'crown' : tier === 'pro' ? 'rocket' : 'spark'}>
+                {tier === 'admin' ? 'Admin' : (TIERS.find(t => t.id === tier)?.name ?? tier)} member
               </Badge>
               <span style={{ fontSize: 12, color: 'rgba(148,163,184,0.85)' }}>· Joined {user.joined}</span>
               {user.telegramLinked && <Badge color="cyan" icon="telegram" size="sm">{user.telegram}</Badge>}

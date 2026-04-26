@@ -7,6 +7,7 @@ import PortfolioPage from './pages/Portfolio.jsx';
 import AnalyticsPage from './pages/Analytics.jsx';
 import AccountPage from './pages/Account.jsx';
 import NewsPage from './pages/News.jsx';
+import AdminPage from './pages/Admin.jsx';
 import { getToken, logout as apiLogout } from './api.js';
 
 function App() {
@@ -17,7 +18,7 @@ function App() {
   const [tier, setTier] = React.useState('free');
   const [quota, setQuota] = React.useState({ used: 0, total: 10 });
 
-  const QUOTA_TOTALS = { free: 10, pro: 50, club: 100 };
+  const QUOTA_TOTALS = { free: 10, pro: 50, club: 100, admin: 999 };
 
   React.useEffect(() => {
     document.body.dataset.tier = tier;
@@ -67,6 +68,7 @@ function App() {
         {page === 'analytics' && <AnalyticsPage tier={tier} addToast={addToast} triggerConfetti={triggerConfetti} />}
         {page === 'news' && <NewsPage openStock={openStock} />}
         {page === 'account' && <AccountPage user={USER} tier={tier} setTier={setTier} addToast={addToast} triggerConfetti={triggerConfetti} />}
+        {page === 'admin' && <AdminPage addToast={addToast} setPage={setPage} />}
       </div>
 
       <StockDrawer stock={selectedStock} onClose={() => setSelectedStock(null)} />
