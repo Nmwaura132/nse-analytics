@@ -4,13 +4,22 @@ Downloads up to 5 years of daily OHLCV from stooq.com and upserts into:
   - stock_price_log  (read by ml_predictor.py via download_history.py)
   - price_history    (read by Django API + bot analytics)
 
+SETUP (one time only):
+  Stooq.com now requires a free API key obtained via CAPTCHA:
+  1. Open https://stooq.com/q/d/?s=SCOM.KE&get_apikey in your browser
+  2. Solve the CAPTCHA
+  3. Copy the <apikey> value from the download URL shown
+  4. Pass it as: python backfill_nse_history.py --stooq-key=YOUR_KEY
+     Or set:   export STOOQ_API_KEY=YOUR_KEY
+
 Run inside the nse-bot container:
-    docker exec $BOT python backfill_nse_history.py
+    docker cp backfill_nse_history.py $BOT:/app/
+    docker exec -e STOOQ_API_KEY=YOUR_KEY $BOT python backfill_nse_history.py
     docker exec $BOT python download_history.py --refresh   # regenerate CSVs
     docker exec $BOT python download_history.py --status    # verify counts
 
-Or locally against a local DB:
-    DATABASE_URL=postgresql://... python backfill_nse_history.py
+Or locally against the production DB:
+    STOOQ_API_KEY=YOUR_KEY DATABASE_URL=postgresql://nse_user:PASS@37.221.93.219:5432/nse_db python backfill_nse_history.py
 """
 
 import os
@@ -67,6 +76,15 @@ HEADERS = {
 }
 
 
+def get_stooq_key() -> str:
+    """Get stooq API key from env or CLI args."""
+    # Check CLI arg: --stooq-key=KEY
+    for arg in sys.argv[1:]:
+        if arg.startswith('--stooq-key='):
+            return arg.split('=', 1)[1].strip()
+    return os.environ.get("STOOQ_API_KEY", "")
+
+
 def get_engine():
     db_url = os.environ.get("DATABASE_URL", "")
     if not db_url:
@@ -77,8 +95,10 @@ def get_engine():
     return create_engine(db_url, pool_pre_ping=True)
 
 
-def fetch_stooq(stooq_sym: str) -> pd.DataFrame | None:
+def fetch_stooq(stooq_sym: str, api_key: str = "") -> pd.DataFrame | None:
     url = STOOQ_BASE.format(symbol=stooq_sym)
+    if api_key:
+        url += f"&k={api_key}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
         resp.raise_for_status()
@@ -161,6 +181,16 @@ def check_table_exists(engine, table_name: str) -> bool:
 def main():
     tickers_arg = [a.upper() for a in sys.argv[1:] if not a.startswith("--")]
     tickers = tickers_arg if tickers_arg else list(STOOQ_MAP.keys())
+    api_key = get_stooq_key()
+
+    if not api_key:
+        print("\n⚠️  Stooq API key required (free):")
+        print("  1. Open https://stooq.com/q/d/?s=SCOM.KE&get_apikey in your browser")
+        print("  2. Solve the CAPTCHA")
+        print("  3. Copy the <apikey> value from the download link shown")
+        print("  4. Run:  python backfill_nse_history.py --stooq-key=YOUR_KEY")
+        print("     Or:   STOOQ_API_KEY=YOUR_KEY python backfill_nse_history.py\n")
+        sys.exit(1)
 
     engine = get_engine()
 
@@ -170,7 +200,7 @@ def main():
             logger.error(f"Table '{tbl}' does not exist — run Django migrations first")
             sys.exit(1)
 
-    logger.info(f"Starting backfill for {len(tickers)} tickers")
+    logger.info(f"Starting backfill for {len(tickers)} tickers (stooq key: {api_key[:6]}...)")
     summary: list[tuple[str, int, int]] = []
 
     for i, ticker in enumerate(tickers, 1):
@@ -180,7 +210,7 @@ def main():
             continue
 
         logger.info(f"[{i}/{len(tickers)}] {ticker} ({stooq_sym})")
-        df = fetch_stooq(stooq_sym)
+        df = fetch_stooq(stooq_sym, api_key)
 
         if df is None or df.empty:
             summary.append((ticker, 0, 0))
