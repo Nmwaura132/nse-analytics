@@ -8,6 +8,10 @@ services:
       POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}'
     volumes:
       - '/opt/nse-pro/postgres-data:/var/lib/postgresql/data'
+    networks:
+      default:
+        aliases:
+          - nse-postgres
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-nse_user} -d ${POSTGRES_DB:-nse_db}']
       interval: 10s
@@ -76,7 +80,7 @@ services:
     environment:
       OPENCLAW_API_URL: 'http://openclaw-gateway:18789'
       HERMES_API_URL: 'http://hermes-agent:8642'
-      DATABASE_URL: 'postgresql://${POSTGRES_USER:-nse_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nse_db}'
+      DATABASE_URL: 'postgresql://${POSTGRES_USER:-nse_user}:${POSTGRES_PASSWORD}@nse-postgres:5432/${POSTGRES_DB:-nse_db}'
     networks:
       - default
       - coolify
@@ -115,7 +119,7 @@ services:
     env_file: .env
     environment:
       DB_ENGINE: django.db.backends.postgresql
-      DB_HOST: postgres
+      DB_HOST: nse-postgres
       DB_PORT: '5432'
       DB_NAME: '${POSTGRES_DB:-nse_db}'
       DB_USER: '${POSTGRES_USER:-nse_user}'
@@ -164,7 +168,7 @@ services:
     environment:
       OPENCLAW_API_URL: 'http://openclaw-gateway:18789'
       HERMES_API_URL: 'http://hermes-agent:8642'
-      DATABASE_URL: 'postgresql://${POSTGRES_USER:-nse_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nse_db}'
+      DATABASE_URL: 'postgresql://${POSTGRES_USER:-nse_user}:${POSTGRES_PASSWORD}@nse-postgres:5432/${POSTGRES_DB:-nse_db}'
       BACKEND_URL: 'http://nse-api:8000/api'
     volumes:
       - '/opt/nse-pro/bot.log:/app/bot.log'
