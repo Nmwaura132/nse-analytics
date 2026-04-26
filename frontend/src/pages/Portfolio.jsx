@@ -1,5 +1,5 @@
 import React from 'react';
-import { NSE_STOCKS, HOLDINGS } from '../data.js';
+import { NSE_STOCKS } from '../data.js';
 import { Icon } from '../icons.jsx';
 import { Badge, Button, Modal } from '../ui.jsx';
 import { Counter, DonutChart } from '../charts.jsx';
@@ -19,24 +19,16 @@ const adviceFor = (h) => {
 };
 
 const PortfolioPage = ({ user, openStock, addToast, triggerConfetti }) => {
-  const [holdings, setHoldings] = React.useState(HOLDINGS);
+  const [holdings, setHoldings] = React.useState(() =>
+    api.getHoldings().map(h => ({
+      ...h,
+      current: NSE_STOCKS.find(s => s.ticker === h.ticker)?.price ?? h.avgCost,
+    }))
+  );
   const [optimizing, setOptimizing] = React.useState(false);
-
-  React.useEffect(() => {
-    if (!api.getToken()) return;
-    api.fetchPortfolio()
-      .then(data => {
-        if (Array.isArray(data.holdings) && data.holdings.length > 0) {
-          setHoldings(data.holdings.map(h => ({
-            ticker: h.ticker,
-            shares: h.qty,
-            avgCost: h.avg_cost,
-            current: h.current_price ?? h.avg_cost,
-          })));
-        }
-      })
-      .catch(() => { /* keep static HOLDINGS fallback */ });
-  }, []);
+  const [consent, setConsent] = React.useState(api.hasConsent);
+  const [consentModal, setConsentModal] = React.useState(false);
+  const [revoking, setRevoking] = React.useState(false);
   const [optimized, setOptimized] = React.useState(null);
   const [budget, setBudget] = React.useState(50000);
   const [selected, setSelected] = React.useState(['SCOM', 'KCB', 'EABL', 'KPLC']);
@@ -53,16 +45,17 @@ const PortfolioPage = ({ user, openStock, addToast, triggerConfetti }) => {
   const plPct = stats.cost ? (pl / stats.cost) * 100 : 0;
   const riskScore = 6.4;
 
-  const removeHolding = async (ticker) => {
+  const removeHolding = (ticker) => {
+    api.removeLocalHolding(ticker);
     setHoldings(h => h.filter(x => x.ticker !== ticker));
     setSellTarget(null);
     addToast({ type: 'success', icon: 'check', title: 'Removed', message: `${ticker} removed from your tracker.` });
-    if (api.getToken()) {
-      try { await api.removeTrade(ticker); } catch { /* local state already updated */ }
+    if (consent && api.getToken()) {
+      api.removeTrade(ticker).catch(() => {});
     }
   };
 
-  const addPosition = async () => {
+  const addPosition = () => {
     const stock = NSE_STOCKS.find(s => s.ticker === addForm.ticker);
     if (!stock || !addForm.shares || !addForm.avgCost) return;
     if (holdings.find(h => h.ticker === addForm.ticker)) {
@@ -70,14 +63,34 @@ const PortfolioPage = ({ user, openStock, addToast, triggerConfetti }) => {
       return;
     }
     const newHolding = { ticker: addForm.ticker, shares: +addForm.shares, avgCost: +addForm.avgCost, current: stock.price };
+    api.saveLocalHolding(addForm.ticker, +addForm.shares, +addForm.avgCost);
     setHoldings(h => [...h, newHolding]);
     setAddOpen(false);
     setAddForm({ ticker: 'SCOM', shares: 100, avgCost: '' });
     triggerConfetti();
     addToast({ type: 'xp', icon: 'sparkles', title: 'Position logged', message: `Now tracking ${addForm.ticker} · alerts active` });
-    if (api.getToken()) {
-      try { await api.addTrade(addForm.ticker, +addForm.shares, +addForm.avgCost); } catch { /* local state already updated */ }
+    if (consent && api.getToken()) {
+      api.addTrade(addForm.ticker, +addForm.shares, +addForm.avgCost).catch(() => {});
     }
+  };
+
+  const grantConsent = async () => {
+    const ok = await api.givePortfolioConsent();
+    if (ok) {
+      setConsent(true);
+      setConsentModal(false);
+      addToast({ type: 'success', icon: 'telegram', title: 'Bot access enabled', message: 'Your portfolio is now shared with @NSEProBot.' });
+    } else {
+      addToast({ type: 'error', icon: 'x', title: 'Failed', message: 'Could not enable bot access. Try again.' });
+    }
+  };
+
+  const revokeConsent = async () => {
+    setRevoking(true);
+    await api.revokePortfolioConsent();
+    setConsent(false);
+    setRevoking(false);
+    addToast({ type: 'info', icon: 'check', title: 'Bot access disabled', message: 'Server data deleted. Holdings remain on this device only.' });
   };
 
   const optimize = () => {
@@ -108,6 +121,23 @@ const PortfolioPage = ({ user, openStock, addToast, triggerConfetti }) => {
           <Button variant="secondary" icon="arrow-down">Export CSV</Button>
           <Button variant="primary" icon="plus" onClick={() => setAddOpen(true)}>Log Position</Button>
         </div>
+      </div>
+
+      {/* Privacy / bot-access banner */}
+      <div style={{ marginBottom: 18, padding: '12px 16px', borderRadius: 10, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+        background: consent ? 'rgba(16,185,129,0.08)' : 'rgba(6,182,212,0.07)',
+        border: `1px solid ${consent ? 'rgba(16,185,129,0.25)' : 'rgba(6,182,212,0.2)'}` }}>
+        <Icon name={consent ? 'telegram' : 'lock'} size={16} color={consent ? '#10b981' : '#06b6d4'} />
+        <span style={{ flex: 1, fontSize: 13, color: 'rgba(203,213,225,0.9)' }}>
+          {consent
+            ? <><span style={{ color: '#10b981', fontWeight: 700 }}>Bot access on</span> — @NSEProBot can see your holdings. Your data is stored on this device and on our server.</>
+            : <><span style={{ color: '#06b6d4', fontWeight: 700 }}>Device-only</span> — holdings saved locally. <span style={{ color: 'rgba(148,163,184,0.85)' }}>Enable bot access to analyse your portfolio with @NSEProBot.</span></>
+          }
+        </span>
+        {consent
+          ? <Button variant="danger" size="sm" onClick={revokeConsent} disabled={revoking}>{revoking ? 'Revoking…' : 'Disable Bot Access'}</Button>
+          : <Button variant="secondary" size="sm" icon="telegram" onClick={() => setConsentModal(true)}>Enable Bot Access</Button>
+        }
       </div>
 
       <div className="glass" style={{ padding: 24, marginBottom: 20, position: 'relative', overflow: 'hidden',
@@ -394,6 +424,39 @@ const PortfolioPage = ({ user, openStock, addToast, triggerConfetti }) => {
         <div style={{ display: 'flex', gap: 10 }}>
           <Button variant="secondary" fullWidth onClick={() => setAddOpen(false)}>Cancel</Button>
           <Button variant="primary" fullWidth icon="check" onClick={addPosition} disabled={!addForm.shares || !addForm.avgCost}>Start tracking</Button>
+        </div>
+      </Modal>
+
+      {/* Bot portfolio consent modal */}
+      <Modal open={consentModal} onClose={() => setConsentModal(false)} maxWidth={460}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(0,136,204,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon name="telegram" size={22} color="#0088cc" />
+          </div>
+          <div>
+            <h3 style={{ fontSize: 18, fontWeight: 700 }}>Share Portfolio with NSE Bot?</h3>
+            <p style={{ fontSize: 12, color: 'rgba(148,163,184,0.85)' }}>Kenya DPA 2019 — explicit consent required</p>
+          </div>
+        </div>
+        <div className="glass" style={{ padding: 14, marginBottom: 16, fontSize: 13, lineHeight: 1.6, color: 'rgba(203,213,225,0.9)' }}>
+          <p style={{ marginBottom: 8 }}>If you enable this, your holdings (tickers, quantities, cost prices) will be stored on our server so that <strong>@NSEProBot</strong> can analyse your portfolio on request.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5, paddingLeft: 4 }}>
+            {[
+              ['What we store', 'Tickers, share quantities, average cost prices'],
+              ['Who can access', 'Only the NSE Analytics bot — not shared with any third party'],
+              ['How long', 'Until you turn this off. You can delete all data instantly.'],
+              ['This is optional', 'Declining does not affect any other features.'],
+            ].map(([k, v]) => (
+              <div key={k} style={{ display: 'flex', gap: 8 }}>
+                <Icon name="check" size={12} color="#10b981" strokeWidth={3} style={{ marginTop: 3, flexShrink: 0 }} />
+                <span><strong style={{ color: 'white' }}>{k}:</strong> {v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <Button variant="secondary" fullWidth onClick={() => setConsentModal(false)}>Not now</Button>
+          <Button variant="primary" fullWidth icon="check" onClick={grantConsent}>Enable Bot Access</Button>
         </div>
       </Modal>
 

@@ -15,6 +15,8 @@ class UserProfile(models.Model):
     subscription_end = models.DateTimeField(null=True, blank=True)
     mpesa_phone = models.CharField(max_length=15, null=True, blank=True)
     bonus_requests = models.IntegerField(default=0)
+    bot_portfolio_consent = models.BooleanField(default=False)
+    consent_date = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     @property

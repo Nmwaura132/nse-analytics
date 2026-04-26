@@ -24,6 +24,7 @@ urlpatterns = [
     path('portfolio', views.PortfolioListView.as_view()),
     path('portfolio/add', views.AddTradeView.as_view()),
     path('portfolio/remove', views.RemoveTradeView.as_view()),
+    path('portfolio/consent', views.PortfolioConsentView.as_view()),
 
     path('notifications', views.NotificationView.as_view()),
 

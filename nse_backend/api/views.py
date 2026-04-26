@@ -148,48 +148,69 @@ class RefreshDataView(APIView):
         return Response({'status': 'ok', 'message': 'Market data refreshed'})
 
 class PortfolioListView(APIView):
-    """Get portfolio holdings and performance summary."""
-    permission_classes = [IsAuthenticated]
+    """Get portfolio holdings and performance summary.
+
+    Web users: JWT required.
+    Bot access: pass ?telegram_id=... — only works if user gave consent.
+    """
+    permission_classes = [AllowAny]
+
+    def _resolve_user_id(self, request):
+        """Return (user_id_str, error_response) — one will be None."""
+        telegram_id = request.query_params.get('telegram_id')
+        if telegram_id:
+            try:
+                profile = UserProfile.objects.select_related('user').get(telegram_id=telegram_id)
+            except UserProfile.DoesNotExist:
+                return None, Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+            if not profile.bot_portfolio_consent:
+                return None, Response(
+                    {'error': 'Portfolio sharing not enabled. Enable it in Account settings.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            return str(profile.user.id), None
+        if request.user.is_authenticated:
+            return str(request.user.id), None
+        return None, Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
 
     def get(self, request):
-        user_id = str(request.user.id)
+        user_id, err = self._resolve_user_id(request)
+        if err:
+            return err
+
         trades = Trade.objects.filter(user_id=user_id)
-        
         market = MarketService.get_data()
         price_map = {s.ticker: s.price for s in market['stocks']}
-        
+
         holdings = []
         total_val = 0
         total_cost = 0
-        
+
         for t in trades:
             curr_price = price_map.get(t.ticker, t.avg_cost)
             val = t.qty * curr_price
             cost = t.qty * t.avg_cost
             pnl = val - cost
-            
-            # Use serializer for consistent output
             serializer = TradeSerializer(t)
             trade_data = serializer.data
             trade_data.update({
                 'current_price': curr_price,
                 'pnl': pnl,
-                'pnl_pct': (pnl / cost * 100) if cost > 0 else 0
+                'pnl_pct': (pnl / cost * 100) if cost > 0 else 0,
             })
             holdings.append(trade_data)
-            
             total_val += val
             total_cost += cost
-            
+
         return Response({
             'holdings': holdings,
             'summary': {
                 'total_value': total_val,
                 'total_pnl': total_val - total_cost,
                 'pnl_pct': ((total_val - total_cost) / total_cost * 100) if total_cost > 0 else 0,
-                'risk_score': 50.0  # Placeholder for complex risk engine
+                'risk_score': 50.0,
             },
-            'is_offline': not bool(market['stocks'])
+            'is_offline': not bool(market['stocks']),
         })
 
 class AddTradeView(APIView):
@@ -225,6 +246,44 @@ class RemoveTradeView(APIView):
         user_id = str(request.user.id)
         Trade.objects.filter(user_id=user_id, ticker=ticker).delete()
         return Response({'success': True, 'message': 'Ticker removed'})
+
+
+class PortfolioConsentView(APIView):
+    """Grant or revoke consent for the Telegram bot to access portfolio data."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """Grant consent + sync holdings passed in body."""
+        profile = request.user.profile
+        profile.bot_portfolio_consent = True
+        profile.consent_date = timezone.now()
+        profile.save(update_fields=['bot_portfolio_consent', 'consent_date'])
+
+        holdings = request.data.get('holdings', [])
+        user_id = str(request.user.id)
+        for h in holdings:
+            ticker = h.get('ticker')
+            qty = h.get('shares') or h.get('qty')
+            avg_cost = h.get('avgCost') or h.get('avg_cost')
+            if not (ticker and qty and avg_cost):
+                continue
+            trade, created = Trade.objects.get_or_create(user_id=user_id, ticker=ticker)
+            if created:
+                trade.qty = float(qty)
+                trade.avg_cost = float(avg_cost)
+                trade.save()
+
+        return Response({'success': True, 'synced': len(holdings)})
+
+    def delete(self, request):
+        """Revoke consent + delete all server-side trade records."""
+        profile = request.user.profile
+        profile.bot_portfolio_consent = False
+        profile.consent_date = None
+        profile.save(update_fields=['bot_portfolio_consent', 'consent_date'])
+        Trade.objects.filter(user_id=str(request.user.id)).delete()
+        return Response({'success': True})
+
 
 class OptimizePortfolioView(APIView):
     """Suggest an optimal portfolio allocation using ML."""

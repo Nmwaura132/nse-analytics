@@ -124,3 +124,46 @@ export const fetchQuota = async (telegramId) => {
     return res.json();
   } catch { return null; }
 };
+
+// ---------------------------------------------------------------------------
+// Portfolio — localStorage-first, server-sync only when bot consent is given
+// ---------------------------------------------------------------------------
+
+const PORTFOLIO_KEY = 'nse_portfolio';
+const CONSENT_KEY = 'nse_bot_consent';
+
+export const getHoldings = () => {
+  try {
+    return JSON.parse(localStorage.getItem(PORTFOLIO_KEY) || '[]');
+  } catch { return []; }
+};
+
+export const saveLocalHolding = (ticker, shares, avgCost) => {
+  const holdings = getHoldings().filter(h => h.ticker !== ticker);
+  holdings.push({ ticker, shares: Number(shares), avgCost: Number(avgCost) });
+  localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(holdings));
+};
+
+export const removeLocalHolding = (ticker) => {
+  const holdings = getHoldings().filter(h => h.ticker !== ticker);
+  localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(holdings));
+};
+
+export const hasConsent = () => localStorage.getItem(CONSENT_KEY) === 'true';
+
+export const givePortfolioConsent = async () => {
+  const holdings = getHoldings();
+  const res = await apiFetch('/portfolio/consent', {
+    method: 'POST',
+    body: JSON.stringify({ holdings }),
+  });
+  if (res.ok) localStorage.setItem(CONSENT_KEY, 'true');
+  return res.ok;
+};
+
+export const revokePortfolioConsent = async () => {
+  try {
+    await apiFetch('/portfolio/consent', { method: 'DELETE' });
+  } catch { /* ignore — revoke locally regardless */ }
+  localStorage.removeItem(CONSENT_KEY);
+};

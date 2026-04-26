@@ -1,6 +1,7 @@
 import React from 'react';
 import { Icon } from '../icons.jsx';
 import { Badge, Button, Modal } from '../ui.jsx';
+import { hasConsent, givePortfolioConsent, revokePortfolioConsent } from '../api.js';
 
 const TIERS = [
   {
@@ -78,6 +79,9 @@ const MpesaModal = ({ open, onClose, plan, onConfirm }) => {
 
 const AccountPage = ({ user, tier, setTier, addToast, triggerConfetti }) => {
   const [mpesaPlan, setMpesaPlan] = React.useState(null);
+  const [botConsent, setBotConsent] = React.useState(hasConsent);
+  const [botConsentModal, setBotConsentModal] = React.useState(false);
+  const [botLoading, setBotLoading] = React.useState(false);
 
   const upgrade = (plan) => {
     if (plan.id === tier) return;
@@ -93,6 +97,27 @@ const AccountPage = ({ user, tier, setTier, addToast, triggerConfetti }) => {
     setTier(plan.id);
     triggerConfetti();
     addToast({ type: 'xp', icon: 'crown', title: `Upgraded to ${plan.name}!`, message: '+500 XP earned · enjoy your perks' });
+  };
+
+  const enableBotAccess = async () => {
+    setBotLoading(true);
+    const ok = await givePortfolioConsent();
+    setBotLoading(false);
+    if (ok) {
+      setBotConsent(true);
+      setBotConsentModal(false);
+      addToast({ type: 'success', icon: 'telegram', title: 'Bot access enabled', message: '@NSEProBot can now analyse your portfolio.' });
+    } else {
+      addToast({ type: 'error', icon: 'x', title: 'Failed', message: 'Could not enable bot access. Try again.' });
+    }
+  };
+
+  const disableBotAccess = async () => {
+    setBotLoading(true);
+    await revokePortfolioConsent();
+    setBotConsent(false);
+    setBotLoading(false);
+    addToast({ type: 'info', icon: 'check', title: 'Bot access disabled', message: 'Server data deleted. Holdings remain on this device.' });
   };
 
   const xpPct = (user.xp / user.nextLevelXp) * 100;
@@ -272,8 +297,57 @@ const AccountPage = ({ user, tier, setTier, addToast, triggerConfetti }) => {
               ))}
             </div>
           </div>
+
+          <div className="glass" style={{ padding: 18, borderColor: botConsent ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.07)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <Icon name="telegram" size={15} color="#0088cc" />
+              <h3 style={{ fontSize: 14, fontWeight: 700, flex: 1 }}>Portfolio Bot Access</h3>
+              <Badge color={botConsent ? 'emerald' : 'slate'} size="sm">{botConsent ? 'ON' : 'OFF'}</Badge>
+            </div>
+            <p style={{ fontSize: 12, color: 'rgba(148,163,184,0.85)', marginBottom: 12, lineHeight: 1.5 }}>
+              {botConsent
+                ? 'Your holdings are shared with @NSEProBot. It can analyse your portfolio on request.'
+                : 'Allow @NSEProBot to access your portfolio for personalised analysis. Optional — Kenya DPA compliant.'}
+            </p>
+            {botConsent
+              ? <Button variant="danger" size="sm" fullWidth onClick={disableBotAccess} disabled={botLoading}>{botLoading ? 'Revoking…' : 'Disable & Delete Server Data'}</Button>
+              : <Button variant="secondary" size="sm" fullWidth icon="telegram" onClick={() => setBotConsentModal(true)}>Enable Bot Access</Button>
+            }
+          </div>
         </div>
       </div>
+
+      <Modal open={botConsentModal} onClose={() => setBotConsentModal(false)} maxWidth={460}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(0,136,204,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon name="telegram" size={22} color="#0088cc" />
+          </div>
+          <div>
+            <h3 style={{ fontSize: 18, fontWeight: 700 }}>Share Portfolio with NSE Bot?</h3>
+            <p style={{ fontSize: 12, color: 'rgba(148,163,184,0.85)' }}>Kenya DPA 2019 — explicit consent required</p>
+          </div>
+        </div>
+        <div className="glass" style={{ padding: 14, marginBottom: 16, fontSize: 13, lineHeight: 1.6, color: 'rgba(203,213,225,0.9)' }}>
+          <p style={{ marginBottom: 10 }}>Your holdings (tickers, quantities, cost prices) will be stored on our server so @NSEProBot can analyse your portfolio on request.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {[
+              ['What we store', 'Tickers, share quantities, average cost prices'],
+              ['Who can access', 'Only the NSE Analytics bot — not shared with any third party'],
+              ['How long', 'Until you turn this off — you can delete all data instantly'],
+              ['This is optional', 'Declining does not affect any other features'],
+            ].map(([k, v]) => (
+              <div key={k} style={{ display: 'flex', gap: 8 }}>
+                <Icon name="check" size={12} color="#10b981" strokeWidth={3} />
+                <span><strong style={{ color: 'white' }}>{k}:</strong> {v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <Button variant="secondary" fullWidth onClick={() => setBotConsentModal(false)}>Not now</Button>
+          <Button variant="primary" fullWidth icon="check" onClick={enableBotAccess} disabled={botLoading}>{botLoading ? 'Enabling…' : 'Enable Bot Access'}</Button>
+        </div>
+      </Modal>
 
       <MpesaModal open={!!mpesaPlan} onClose={() => setMpesaPlan(null)} plan={mpesaPlan} onConfirm={confirmUpgrade} />
 
