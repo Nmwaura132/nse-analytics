@@ -154,6 +154,11 @@ def get_cached_data():
     return market_cache
 
 
+@app.route('/health')
+def health():
+    return {'status': 'ok'}
+
+
 @app.route('/')
 def index():
     return render_template('dashboard.html')
@@ -637,4 +642,4 @@ if __name__ == '__main__':
     print("  Powered by TradingView Real-Time Data")
     print("=" * 50)
     print("\nOpen http://127.0.0.1:5001 in your browser.")
-    app.run(debug=False, port=5001)
+    app.run(debug=False, host='0.0.0.0', port=5001)
