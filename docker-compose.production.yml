@@ -96,7 +96,7 @@ services:
       - 'traefik.http.routers.nse-dashboard-http.entrypoints=http'
       - 'traefik.http.routers.nse-dashboard-http.middlewares=redirect-https@docker'
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost/']
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1/']
       interval: 30s
       timeout: 5s
       retries: 3
@@ -160,6 +160,8 @@ services:
       HERMES_API_URL: 'http://hermes-agent:8642'
       DATABASE_URL: 'postgresql://${POSTGRES_USER:-nse_user}:${POSTGRES_PASSWORD}@nse-postgres:5432/${POSTGRES_DB:-nse_db}'
       BACKEND_URL: 'http://nse-api:8000/api'
+    networks:
+      - default
     volumes:
       - '/opt/nse-pro/bot.log:/app/bot.log'
       - '/opt/nse-pro/ml-models:/app/models'
