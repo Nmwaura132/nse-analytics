@@ -1278,29 +1278,76 @@ async def _log_prices_to_db(stocks: list) -> None:
     try:
         inserted = 0
         for s in stocks:
-            ticker = s.get('ticker')
-            price = s.get('price')
+            # Support both dict-style and StockScore object
+            if hasattr(s, 'ticker'):
+                ticker = s.ticker
+                price = s.price
+                volume = s.volume
+                change = s.change
+                change_pct = s.change_pct
+            else:
+                ticker = s.get('ticker')
+                price = s.get('price')
+                volume = s.get('volume')
+                change = s.get('change')
+                change_pct = s.get('change_pct')
             if not ticker or price is None:
                 continue
             existing = db.query(StockPriceLog).filter_by(ticker=ticker, trade_date=today).first()
             if existing:
                 existing.close = price
-                existing.volume = s.get('volume')
-                existing.change = s.get('change')
-                existing.change_pct = s.get('change_pct')
+                existing.volume = volume
+                existing.change = change
+                existing.change_pct = change_pct
             else:
                 db.add(StockPriceLog(
                     ticker=ticker,
                     trade_date=today,
                     close=price,
-                    volume=s.get('volume'),
-                    change=s.get('change'),
-                    change_pct=s.get('change_pct'),
+                    volume=volume,
+                    change=change,
+                    change_pct=change_pct,
                 ))
                 inserted += 1
         db.commit()
         if inserted:
             logger.debug("_log_prices_to_db: inserted %d new price rows for %s", inserted, today)
+
+        # Also write to price_history table (used by ML predictor + Django API)
+        try:
+            from sqlalchemy import text
+            db2 = SessionLocal()
+            ph_inserted = 0
+            for s in stocks:
+                if hasattr(s, 'ticker'):
+                    ticker, price, volume = s.ticker, s.price, s.volume
+                    change, change_pct = s.change, s.change_pct
+                else:
+                    ticker = s.get('ticker'); price = s.get('price')
+                    volume = s.get('volume'); change = s.get('change')
+                    change_pct = s.get('change_pct')
+                if not ticker or price is None:
+                    continue
+                db2.execute(text("""
+                    INSERT INTO price_history (ticker, date, close, volume, change_abs, change_pct, source)
+                    VALUES (:ticker, :date, :close, :volume, :change_abs, :change_pct, 'bot')
+                    ON CONFLICT (ticker, date) DO UPDATE
+                    SET close=EXCLUDED.close, volume=EXCLUDED.volume,
+                        change_abs=EXCLUDED.change_abs, change_pct=EXCLUDED.change_pct
+                """), dict(ticker=ticker, date=today, close=price, volume=volume,
+                           change_abs=change, change_pct=change_pct))
+                ph_inserted += 1
+            db2.commit()
+            if ph_inserted:
+                logger.debug("_log_prices_to_db: upserted %d rows into price_history", ph_inserted)
+        except Exception as exc2:
+            logger.warning("_log_prices_to_db: price_history write failed: %s", exc2)
+        finally:
+            try:
+                db2.close()
+            except Exception:
+                pass
+
     except Exception as exc:
         db.rollback()
         logger.warning("_log_prices_to_db failed: %s", exc)
